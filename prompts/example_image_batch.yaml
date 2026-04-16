@@ -1,0 +1,18 @@
+defaults:
+  mode: image
+  model: gemini-3.1-flash-image-preview
+  num_outputs: 1
+  temperature: 0.7
+
+jobs:
+  - title: "Molten library"
+    prompt: >
+      A surreal reading room inside a half-submerged library at dusk, warm tungsten lamps,
+      drifting dust, charred books stacked like sculptures, realistic cinematic stillness,
+      painterly but detailed.
+
+  - title: "Poster cleanup"
+    image: refs/poster_source.png
+    prompt: >
+      Replace the messy hand-drawn title with a clean, elegant serif title that reads
+      "Glass Harbor", while preserving the composition and color mood of the poster.

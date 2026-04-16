@@ -3,11 +3,14 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import io
 import json
+import mimetypes
 import os
 import re
 import sys
 import time
+import base64
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,7 +20,9 @@ except Exception:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
 
 
-DEFAULT_MODEL = "veo-3.1-fast-generate-preview"
+DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
+DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+DEFAULT_IMAGE_TEMPERATURE = 0.7
 BLOCK_SEPARATOR = re.compile(r"(?m)^\s*---+\s*$")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,6 +84,73 @@ def init_client() -> tuple[Any, Any]:
     return genai.Client(api_key=api_key), gtypes
 
 
+def require_pillow() -> Any:
+    try:
+        from PIL import Image  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("Pillow is not installed. Run `pip install -e .` in this repo.") from exc
+    return Image
+
+
+def load_input_image(path: Path, *, image_module: Any) -> Any:
+    if not path.is_file():
+        raise FileNotFoundError(f"Image not found: {path}")
+    mime_type, _ = mimetypes.guess_type(str(path))
+    if not (mime_type and mime_type.startswith("image/")):
+        raise RuntimeError(f"Expected image/* input, got {mime_type or 'unknown'}: {path}")
+    img = image_module.open(path)
+    return img.convert("RGB")
+
+
+def decode_inline_image(part: Any, *, image_module: Any) -> Optional[Any]:
+    inline = getattr(part, "inline_data", None)
+    if inline is None:
+        return None
+    mime_type = getattr(inline, "mime_type", None)
+    if not (isinstance(mime_type, str) and mime_type.startswith("image/")):
+        return None
+    data = getattr(inline, "data", None)
+    raw: Optional[bytes]
+    if isinstance(data, (bytes, bytearray)):
+        raw = bytes(data)
+    elif isinstance(data, str):
+        try:
+            raw = base64.b64decode(data)
+        except Exception:
+            raw = None
+    else:
+        raw = None
+    if not raw:
+        return None
+    try:
+        img = image_module.open(io.BytesIO(raw))
+        return img.convert("RGB")
+    except Exception:
+        return None
+
+
+def image_size_dict(img: Any) -> dict[str, int]:
+    try:
+        width, height = img.size  # type: ignore[attr-defined]
+        return {"width": int(width), "height": int(height)}
+    except Exception:
+        return {"width": 0, "height": 0}
+
+
+def build_image_config(*, aspect_ratio: Optional[str], image_size: Optional[str], gtypes: Any) -> Any:
+    if not aspect_ratio and not image_size:
+        return None
+    if not hasattr(gtypes, "ImageConfig"):
+        raise RuntimeError(
+            "Installed google-genai does not expose types.ImageConfig. "
+            "Upgrade the package before using aspect_ratio or image_size."
+        )
+    return gtypes.ImageConfig(  # type: ignore[call-arg]
+        aspect_ratio=aspect_ratio or None,
+        image_size=image_size or None,
+    )
+
+
 def coerce_scalar(text: str) -> Any:
     value = text.strip()
     lowered = value.lower()
@@ -135,11 +207,30 @@ def parse_block_header(block: str) -> tuple[dict[str, Any], str]:
     return normalize_job_dict(header), body.strip()
 
 
+def looks_like_header_block(text: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    for line in lines:
+        if ":" not in line:
+            return False
+        key, _value = line.split(":", 1)
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", key.strip()):
+            return False
+    return True
+
+
 def parse_txt_batch(path: Path) -> list[dict[str, Any]]:
     text = path.read_text(encoding="utf-8")
     blocks: list[str]
     if BLOCK_SEPARATOR.search(text):
         blocks = [chunk.strip() for chunk in BLOCK_SEPARATOR.split(text) if chunk.strip()]
+    elif "\n\n" in text:
+        paragraph_blocks = [chunk.strip() for chunk in re.split(r"(?:\r?\n){2,}", text) if chunk.strip()]
+        if paragraph_blocks and looks_like_header_block(paragraph_blocks[0]):
+            blocks = ["\n\n".join(paragraph_blocks)]
+        else:
+            blocks = paragraph_blocks
     else:
         blocks = [line.strip() for line in text.splitlines() if line.strip()]
 
@@ -241,10 +332,24 @@ def resolved_job(
         raise RuntimeError(f"Job {job.get('source_index')} has no prompt.")
 
     title = str(merged.get("title") or prompt_stem(prompt))
-    model = str(merged.get("model") or os.getenv("GEMINI_VIDEO_MODEL") or DEFAULT_MODEL)
+    mode = str(merged.get("mode") or "video").strip().lower()
+    if mode not in {"video", "image"}:
+        raise RuntimeError(f"Unsupported mode for job {job.get('source_index')}: {mode}")
+    if mode == "image":
+        default_model = os.getenv("GEMINI_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL
+        default_temperature = DEFAULT_IMAGE_TEMPERATURE
+        default_num_outputs = 1
+        default_system_prompt = ""
+    else:
+        default_model = os.getenv("GEMINI_VIDEO_MODEL") or DEFAULT_VIDEO_MODEL
+        default_temperature = None
+        default_num_outputs = None
+        default_system_prompt = None
+    model = str(merged.get("model") or default_model)
     out_root = resolve_output_root(str(merged.get("out_root") or "out"))
 
     resolved = {
+        "mode": mode,
         "title": title,
         "prompt": prompt.strip(),
         "model": model,
@@ -257,6 +362,10 @@ def resolved_job(
         "reference_images": merged.get("reference_images"),
         "video": merged.get("video"),
         "video_uri": merged.get("video_uri"),
+        "num_outputs": merged.get("num_outputs", default_num_outputs),
+        "temperature": merged.get("temperature", default_temperature),
+        "system_prompt": merged.get("system_prompt", default_system_prompt),
+        "image_size": merged.get("image_size"),
         "config": dict(merged.get("config") or {}),
         "out_root": out_root,
         "source_index": merged.get("source_index"),
@@ -268,6 +377,7 @@ def resolved_job(
 
 def build_job_hash(job: dict[str, Any]) -> str:
     payload = {
+        "mode": job["mode"],
         "prompt": job["prompt"],
         "model": job["model"],
         "duration_seconds": job.get("duration_seconds"),
@@ -279,6 +389,10 @@ def build_job_hash(job: dict[str, Any]) -> str:
         "reference_images": job.get("reference_images"),
         "video": job.get("video"),
         "video_uri": job.get("video_uri"),
+        "num_outputs": job.get("num_outputs"),
+        "temperature": job.get("temperature"),
+        "system_prompt": job.get("system_prompt"),
+        "image_size": job.get("image_size"),
         "config": job.get("config") or {},
     }
     raw = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -288,6 +402,7 @@ def build_job_hash(job: dict[str, Any]) -> str:
 def summarize_job(index: int, job: dict[str, Any]) -> dict[str, Any]:
     return {
         "index": index,
+        "mode": job["mode"],
         "title": job["title"],
         "model": job["model"],
         "duration_seconds": job.get("duration_seconds"),
@@ -298,6 +413,10 @@ def summarize_job(index: int, job: dict[str, Any]) -> dict[str, Any]:
         "reference_images": job.get("reference_images"),
         "video": job.get("video"),
         "video_uri": job.get("video_uri"),
+        "num_outputs": job.get("num_outputs") or 1,
+        "temperature": job.get("temperature"),
+        "system_prompt": job.get("system_prompt"),
+        "image_size": job.get("image_size"),
         "config": job.get("config") or {},
         "prompt_preview": job["prompt"][:120],
         "out_root": str(job["out_root"]),
@@ -346,6 +465,25 @@ def resolve_reference_images(job: dict[str, Any], *, base_dir: Path, gtypes: Any
     return references
 
 
+def resolve_image_inputs(job: dict[str, Any], *, base_dir: Path) -> list[Path]:
+    resolved: list[Path] = []
+    if job.get("image"):
+        resolved.append(resolve_input_path(base_dir, str(job["image"])))
+    images = job.get("images") or []
+    if isinstance(images, list):
+        for image_path in images:
+            resolved.append(resolve_input_path(base_dir, str(image_path)))
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in resolved:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
 def save_generated_videos(
     *,
     client: Any,
@@ -365,6 +503,26 @@ def save_generated_videos(
                 "path": str(output_path),
                 "mime_type": getattr(video, "mime_type", None),
                 "uri": getattr(video, "uri", None),
+            }
+        )
+    return outputs
+
+
+def save_generated_images(
+    *,
+    generated_images: list[Any],
+    job_dir: Path,
+    title_slug: str,
+) -> list[dict[str, Any]]:
+    outputs: list[dict[str, Any]] = []
+    for index, image in enumerate(generated_images, start=1):
+        output_path = (job_dir / f"{title_slug}_{index:02d}.png").resolve()
+        image.save(str(output_path), format="PNG")
+        outputs.append(
+            {
+                "index": index,
+                "path": str(output_path),
+                **image_size_dict(image),
             }
         )
     return outputs
@@ -461,6 +619,120 @@ def generate_job(
     return result
 
 
+def generate_image_job(
+    *,
+    client: Any,
+    gtypes: Any,
+    batch_path: Path,
+    job: dict[str, Any],
+    run_day_dir: Path,
+) -> dict[str, Any]:
+    image_module = require_pillow()
+    title_slug = slugify(job["title"]) or f"job-{job['source_index']}"
+    job_hash = build_job_hash(job)
+    model_slug = slugify(job["model"], max_len=80)
+    job_dir = ensure_dir(
+        run_day_dir / model_slug / f"{int(job['source_index']):02d}_{title_slug}_{job_hash}"
+    )
+
+    base_dir = batch_path.parent.resolve()
+    image_inputs = resolve_image_inputs(job, base_dir=base_dir)
+    contents: list[Any] = [job["prompt"]]
+    for path in image_inputs:
+        contents.append(load_input_image(path, image_module=image_module))
+
+    cfg_kwargs: dict[str, Any] = {
+        "response_modalities": ["IMAGE", "TEXT"],
+        "system_instruction": job.get("system_prompt") or None,
+        "temperature": job.get("temperature"),
+    }
+    image_cfg = build_image_config(
+        aspect_ratio=job.get("aspect_ratio"),
+        image_size=job.get("image_size"),
+        gtypes=gtypes,
+    )
+    if image_cfg is not None:
+        cfg_kwargs["image_config"] = image_cfg
+    config = gtypes.GenerateContentConfig(  # type: ignore[call-arg]
+        **{key: value for key, value in cfg_kwargs.items() if value is not None}
+    )
+
+    requested_outputs = int(job.get("num_outputs") or 1)
+    if requested_outputs < 1 or requested_outputs > 4:
+        raise RuntimeError("num_outputs must be between 1 and 4")
+
+    generated_images: list[Any] = []
+    texts: list[str] = []
+    attempts = 0
+    started_at = now_iso()
+    while len(generated_images) < requested_outputs and attempts < requested_outputs:
+        attempts += 1
+        response = client.models.generate_content(
+            model=job["model"],
+            contents=contents,
+            config=config,
+        )
+        response_candidates = getattr(response, "candidates", None) or []
+        for response_candidate in response_candidates:
+            content = getattr(response_candidate, "content", None) or response_candidate
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                if hasattr(part, "as_image") and callable(getattr(part, "as_image")):
+                    try:
+                        image_obj = part.as_image()  # type: ignore[call-arg]
+                        if image_obj is not None:
+                            generated_images.append(image_obj.convert("RGB"))
+                            continue
+                    except Exception:
+                        pass
+                inline_img = decode_inline_image(part, image_module=image_module)
+                if inline_img is not None:
+                    generated_images.append(inline_img)
+                    continue
+                text_value = getattr(part, "text", None)
+                if text_value:
+                    texts.append(text_value)
+
+    generated_images = generated_images[:requested_outputs]
+    if not generated_images:
+        raise RuntimeError("No image parts returned from Gemini.")
+
+    outputs = save_generated_images(
+        generated_images=generated_images,
+        job_dir=job_dir,
+        title_slug=title_slug,
+    )
+    result = {
+        "status": "ok",
+        "created_at": now_iso(),
+        "started_at": started_at,
+        "batch_file": str(batch_path.resolve()),
+        "source_index": job["source_index"],
+        "mode": "image",
+        "title": job["title"],
+        "model": job["model"],
+        "prompt": job["prompt"],
+        "resolved_params": {
+            "aspect_ratio": job.get("aspect_ratio"),
+            "image_size": job.get("image_size"),
+            "temperature": job.get("temperature"),
+            "system_prompt": job.get("system_prompt"),
+            "num_outputs": requested_outputs,
+            "image": job.get("image"),
+            "images": job.get("images"),
+            "config": job.get("config") or {},
+        },
+        "input_count": len(image_inputs),
+        "inputs": [str(path) for path in image_inputs],
+        "attempts": attempts,
+        "text": "\n".join(texts).strip() or None,
+        "job_dir": str(job_dir),
+        "outputs": outputs,
+    }
+    write_json(job_dir / "job.json", result)
+    return result
+
+
 def plan_payload(batch_path: Path, jobs: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "batch_file": str(batch_path.resolve()),
@@ -471,9 +743,14 @@ def plan_payload(batch_path: Path, jobs: list[dict[str, Any]]) -> dict[str, Any]
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Batch Gemini video generation from text or YAML prompt files."
+        description="Batch Gemini image or video generation from text or YAML prompt files."
     )
     parser.add_argument("batch", help="Path to a .txt, .yaml, or .yml batch file.")
+    parser.add_argument(
+        "--mode",
+        choices=["image", "video"],
+        help="Override mode for all jobs. Default: use job/defaults or fallback to video.",
+    )
     parser.add_argument(
         "--format",
         choices=["auto", "txt", "yaml"],
@@ -497,6 +774,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.set_defaults(enhance_prompt=None)
     parser.add_argument("--number-of-videos", type=int, help="Override number_of_videos.")
+    parser.add_argument("--num-outputs", type=int, help="Override num_outputs for image generation.")
+    parser.add_argument("--temperature", type=float, help="Override image generation temperature.")
+    parser.add_argument("--system-prompt", help="Override system_prompt for image generation.")
+    parser.add_argument("--image-size", help="Override image_size for image generation.")
     parser.add_argument("--out-root", help="Override the output root directory.")
     parser.add_argument("--poll-seconds", type=int, default=10, help="Polling interval.")
     parser.add_argument("--limit", type=int, help="Only run the first N jobs.")
@@ -518,11 +799,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     defaults, jobs_raw = batch_defaults_and_jobs(batch_path, args.format)
     cli_overrides = {
+        "mode": args.mode,
         "model": args.model,
         "duration_seconds": args.duration_seconds,
         "aspect_ratio": args.aspect_ratio,
         "enhance_prompt": args.enhance_prompt,
         "number_of_videos": args.number_of_videos,
+        "num_outputs": args.num_outputs,
+        "temperature": args.temperature,
+        "system_prompt": args.system_prompt,
+        "image_size": args.image_size,
         "out_root": args.out_root,
     }
     jobs = [
@@ -555,20 +841,29 @@ def main(argv: Optional[list[str]] = None) -> int:
     failures = 0
 
     for job in jobs:
-        print(f"[{job['source_index']}] generating {job['title']} with {job['model']}")
+        print(
+            f"[{job['source_index']}] generating {job['title']} "
+            f"({job['mode']}) with {job['model']}"
+        )
         try:
-            result = generate_job(
-                client=client,
-                gtypes=gtypes,
-                batch_path=batch_path,
-                job=job,
-                run_day_dir=day_dir,
-                poll_seconds=args.poll_seconds,
-            )
-            print(
-                f"[{job['source_index']}] saved {len(result['outputs'])} video(s) to "
-                f"{result['job_dir']}"
-            )
+            if job["mode"] == "image":
+                result = generate_image_job(
+                    client=client,
+                    gtypes=gtypes,
+                    batch_path=batch_path,
+                    job=job,
+                    run_day_dir=day_dir,
+                )
+            else:
+                result = generate_job(
+                    client=client,
+                    gtypes=gtypes,
+                    batch_path=batch_path,
+                    job=job,
+                    run_day_dir=day_dir,
+                    poll_seconds=args.poll_seconds,
+                )
+            print(f"[{job['source_index']}] saved {len(result['outputs'])} output(s) to {result['job_dir']}")
             results.append(result)
         except Exception as exc:
             failures += 1

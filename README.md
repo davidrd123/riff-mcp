@@ -1,6 +1,6 @@
 # Gemini Video Prompts
 
-Small standalone batch runner for Gemini video generation.
+Small standalone batch runner for Gemini image or video generation.
 
 It is built around the official `google-genai` Python SDK and the Gemini video
 API flow documented by Google:
@@ -10,11 +10,27 @@ API flow documented by Google:
 - `client.files.download(...)`
 - save the returned video bytes to `.mp4`
 
-The default model is `veo-3.1-fast-generate-preview`, but the actual model is
-always configurable so a teammate with access to a newer preview can swap in a
-different model code without editing the code.
+The defaults now follow two tracks:
+
+- video default model: `veo-3.1-fast-generate-preview`
+- image default model: `gemini-3.1-flash-image-preview`
+
+The actual model is always configurable so a teammate with access to a newer
+preview can swap in a different model code without editing the code.
 
 ## Install
+
+Preferred with `uv`:
+
+```bash
+cd gemini-video-prompts
+uv sync
+cp .env.example .env
+```
+
+Then run with `uv run`.
+
+Fallback with plain venv/pip:
 
 ```bash
 cd gemini-video-prompts
@@ -29,23 +45,44 @@ Then set `GEMINI_API_KEY` in `.env` or your shell.
 
 ## Quick Start
 
-Preview a batch plan without calling the API:
+Preview an image batch plan without calling the API:
 
 ```bash
-gemini-video-prompts prompts/example_batch.txt --plan
+uv run gemini-video-prompts prompts/example_image_batch.txt --mode image --plan
 ```
 
-Run the batch:
+Run an image batch:
 
 ```bash
-gemini-video-prompts prompts/example_batch.txt
+uv run gemini-video-prompts prompts/example_image_batch.txt --mode image
+```
+
+Run a video batch:
+
+```bash
+uv run gemini-video-prompts prompts/example_batch.txt
 ```
 
 Override the model for a teammate who has access to a newer one:
 
 ```bash
-gemini-video-prompts prompts/example_batch.txt --model veo-3.1-lite-generate-preview
+uv run gemini-video-prompts prompts/example_image_batch.txt --mode image --model gemini-2.5-flash-image
 ```
+
+## Defaults
+
+Current defaults in the standalone CLI:
+
+- mode: `video`
+- video model: `veo-3.1-fast-generate-preview`
+- image model: `gemini-3.1-flash-image-preview`
+- image temperature: `0.7`
+- image num outputs: `1`
+- video poll interval: `10` seconds
+- output root: `out/`
+
+Those image defaults were chosen to stay aligned with `tools/vision.py` in the
+main repo.
 
 ## Input Formats
 
@@ -78,11 +115,16 @@ A montage of pizza making with energetic camera movement and naturally generated
 
 Supported inline metadata keys:
 
+- `mode`
 - `title`
 - `model`
 - `aspect_ratio`
 - `duration_seconds`
 - `enhance_prompt`
+- `num_outputs`
+- `temperature`
+- `system_prompt`
+- `image_size`
 - `image`
 - `images`
 - `reference_images`
@@ -118,6 +160,7 @@ Top-level YAML keys:
 
 Supported job/default fields:
 
+- `mode`
 - `title`
 - `prompt`
 - `prompt_file`
@@ -126,6 +169,10 @@ Supported job/default fields:
 - `aspect_ratio`
 - `enhance_prompt`
 - `number_of_videos`
+- `num_outputs`
+- `temperature`
+- `system_prompt`
+- `image_size`
 - `image`
 - `images`
 - `reference_images`
@@ -161,7 +208,8 @@ The run root also gets a manifest JSON for the whole batch.
 Preview only:
 
 ```bash
-gemini-video-prompts prompts/example_batch.yaml --plan
+uv run gemini-video-prompts prompts/example_batch.yaml --plan
+uv run gemini-video-prompts prompts/example_image_batch.yaml --mode image --plan
 ```
 
 Limit the batch:
@@ -180,9 +228,14 @@ gemini-video-prompts prompts/example_batch.yaml --out-root /tmp/gemini-videos
 
 - Google’s video generation flow is asynchronous, so jobs are run sequentially
   and polled until complete.
+- Image generation uses the same Gemini pattern as `tools/vision.py`: text or
+  input images go into `generate_content(...)`, and inline image parts are saved
+  as PNGs.
 - The tool is intentionally model-string driven. If your teammate gets access to
   a newer preview model, they can pass it with `--model` or `GEMINI_VIDEO_MODEL`.
+- Image mode also supports `GEMINI_IMAGE_MODEL`.
 - `images` is a convenience shorthand for Veo 3.1 reference images. Those paths
-  are converted into `reference_images` entries with `reference_type="asset"`.
+  are converted into `reference_images` entries with `reference_type="asset"`
+  in video mode. In image mode, `image` and `images` are treated as edit inputs.
 - Advanced model-specific parameters can go under YAML `config` or text headers
   as `config.<key>: value`.

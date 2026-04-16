@@ -1,0 +1,12 @@
+title: molten-library
+num_outputs: 1
+
+A surreal reading room inside a half-submerged library at dusk, warm tungsten lamps, drifting dust,
+charred books stacked like sculptures, realistic cinematic stillness, painterly but detailed.
+---
+title: poster-cleanup
+num_outputs: 1
+image: refs/poster_source.png
+
+Replace the messy hand-drawn title with a clean, elegant serif title that reads "Glass Harbor".
+

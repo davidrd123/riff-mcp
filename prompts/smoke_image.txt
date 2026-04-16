@@ -1,0 +1,4 @@
+title: smoke-image
+num_outputs: 1
+
+A small red paper lantern on a wooden table at dusk, cinematic natural light, realistic texture, quiet atmosphere.

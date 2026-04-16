@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "google-genai>=1.47.0",
+    "pillow>=10.4.0",
     "PyYAML>=6.0.2",
     "python-dotenv>=1.0.1",
 ]
