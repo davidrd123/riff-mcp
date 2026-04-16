@@ -1,0 +1,31 @@
+defaults:
+  model: veo-3.1-fast-generate-preview
+  duration_seconds: 8
+  aspect_ratio: "16:9"
+  enhance_prompt: true
+
+jobs:
+  - title: "Torchlight wall"
+    prompt: >
+      A close up of two people staring at a cryptic drawing on a wall, torchlight flickering.
+      A man murmurs, "This must be it. That's the secret code." The woman whispers,
+      "What did you find?" Realistic torch crackle and hushed dialogue.
+
+  - title: "Waterfall portrait"
+    aspect_ratio: "9:16"
+    config:
+      resolution: "720p"
+    prompt: >
+      A majestic Hawaiian waterfall in a lush rainforest, drifting mist, smooth cinematic motion,
+      realistic water flow, layered foliage movement, and natural ambient forest sound.
+
+  - title: "Fashion lagoon with references"
+    # Replace these with real local files before running the batch.
+    images:
+      - refs/flamingo_dress.png
+      - refs/flamingo_woman.png
+      - refs/flamingo_glasses.png
+    prompt: >
+      A woman wearing a magnificent flamingo-inspired couture dress walks through a shallow turquoise
+      lagoon. The camera pulls back slowly as the dress train glides on the water, with a dreamlike,
+      high-fashion atmosphere and naturally generated ambient sound.

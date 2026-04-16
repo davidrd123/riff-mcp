@@ -1,0 +1,21 @@
+title: secret-code
+aspect_ratio: 16:9
+duration_seconds: 8
+
+A close up of two people staring at a cryptic drawing on a wall, torchlight flickering.
+A man murmurs, "This must be it. That's the secret code." The woman leans in and whispers,
+"What did you find?" Natural fire crackle and low room tone.
+---
+title: pizza-portrait
+aspect_ratio: 9:16
+duration_seconds: 8
+config.resolution: 720p
+
+A fast, appetizing montage of pizza making: flour tossed into the air, dough stretched by hand,
+red sauce spiraled across the crust, mozzarella scattered, pepperoni layered, and the finished
+pizza emerging golden and bubbling from the oven. Upbeat kitchen sound and confident camera movement.
+---
+A neon hologram of a cat driving at top speed through a rainy city at night, cinematic realism,
+blue and magenta reflections, tire spray, thunder in the distance, naturally generated engine and
+street ambience.
+
