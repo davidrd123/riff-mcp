@@ -2,13 +2,13 @@
 
 Small standalone batch runner for Gemini image or video generation.
 
-It is built around the official `google-genai` Python SDK and the Gemini video
-API flow documented by Google:
+It is built around the official `google-genai` Python SDK. Two generation flows
+are supported:
 
-- `client.models.generate_videos(...)`
-- poll the long-running operation
-- `client.files.download(...)`
-- save the returned video bytes to `.mp4`
+- **Image** — `client.models.generate_content(...)` with image response
+  modality, decoding inline image parts into PNGs.
+- **Video** — `client.models.generate_videos(...)`, polling the long-running
+  operation, then `client.files.download(...)` to save MP4s.
 
 The defaults now follow two tracks:
 
@@ -63,6 +63,12 @@ Run a video batch:
 uv run gemini-video-prompts prompts/example_batch.txt
 ```
 
+Generate a single image inline (no batch file needed):
+
+```bash
+uv run gemini-video-prompts --prompt "A glowing jellyfish drifting through neon kelp." --mode image
+```
+
 Override the model for a teammate who has access to a newer one:
 
 ```bash
@@ -80,9 +86,6 @@ Current defaults in the standalone CLI:
 - image num outputs: `1`
 - video poll interval: `10` seconds
 - output root: `out/`
-
-Those image defaults were chosen to stay aligned with `tools/vision.py` in the
-main repo.
 
 ## Input Formats
 
@@ -113,24 +116,8 @@ config.resolution: 720p
 A montage of pizza making with energetic camera movement and naturally generated kitchen sound.
 ```
 
-Supported inline metadata keys:
-
-- `mode`
-- `title`
-- `model`
-- `aspect_ratio`
-- `duration_seconds`
-- `enhance_prompt`
-- `num_outputs`
-- `temperature`
-- `system_prompt`
-- `image_size`
-- `image`
-- `images`
-- `reference_images`
-- `video`
-- `video_uri`
-- `config.<key>` for raw `GenerateVideosConfig` fields
+Supported header keys (same set as YAML — see [Supported Keys](#supported-keys)
+below). In text headers, nested fields use dot notation: `config.<key>: value`.
 
 ### 2. YAML batch
 
@@ -158,27 +145,70 @@ Top-level YAML keys:
 - `defaults`: optional shared values
 - `jobs`: required list of job objects
 
-Supported job/default fields:
+Each job (and `defaults`) accepts the keys listed in [Supported Keys](#supported-keys).
 
-- `mode`
-- `title`
-- `prompt`
-- `prompt_file`
-- `model`
-- `duration_seconds`
-- `aspect_ratio`
-- `enhance_prompt`
-- `number_of_videos`
-- `num_outputs`
-- `temperature`
-- `system_prompt`
-- `image_size`
-- `image`
-- `images`
-- `reference_images`
-- `video`
-- `video_uri`
-- `config`: extra fields forwarded into `GenerateVideosConfig`
+### 3. Inline prompt (no file required)
+
+For a single prompt without a batch file — the typical "jamming" workflow when
+you're iterating with a chat agent:
+
+```bash
+uv run gemini-video-prompts \
+  --prompt "A glowing jellyfish drifting through neon kelp." \
+  --mode image
+```
+
+With input images and overrides:
+
+```bash
+uv run gemini-video-prompts \
+  --prompt "tighten the composition, more contrast" \
+  --image ./refs/jelly.png \
+  --mode image \
+  --num-outputs 2 \
+  --aspect-ratio "16:9"
+```
+
+Inline-only flags:
+
+- `--prompt` — the prompt text. Mutually exclusive with the positional batch
+  file argument.
+- `--image` — single input image path; relative paths resolve against your
+  current directory.
+- `--images` — comma-separated input image paths.
+- `--title` — optional job title (otherwise auto-derived from the first words
+  of the prompt).
+
+Every other CLI flag (`--mode`, `--model`, `--num-outputs`, `--temperature`,
+`--system-prompt`, `--aspect-ratio`, `--out-root`, etc.) works the same in
+inline mode as in batch mode.
+
+## Supported Keys
+
+These keys are accepted in text headers, YAML jobs, and YAML `defaults`. CLI
+flags override them. Mode column shows where each key applies.
+
+| Key | Mode | Notes |
+|-----|------|-------|
+| `mode` | both | `image` or `video` |
+| `title` | both | Auto-derived from prompt if omitted |
+| `prompt` | YAML only | Text format uses the block body for the prompt |
+| `prompt_file` | both | Loads the prompt from a separate file (overrides `prompt`/body) |
+| `model` | both | Model code, e.g. `gemini-3-pro-image-preview` |
+| `aspect_ratio` | both | e.g. `"16:9"`, `"9:16"` |
+| `duration_seconds` | video | |
+| `enhance_prompt` | video | bool |
+| `number_of_videos` | video | |
+| `num_outputs` | image | 1–4 |
+| `temperature` | image | |
+| `system_prompt` | image | |
+| `image_size` | image | |
+| `image` | both | Single input image path |
+| `images` | both | List or comma-separated string of image paths |
+| `reference_images` | video | Explicit Veo 3.1 reference image entries with `reference_type` |
+| `video` | video | Input video path |
+| `video_uri` | video | Input video URI |
+| `config` | both | Extra fields forwarded into the underlying generation config (`config.<key>: value` in text headers, nested mapping in YAML) |
 
 CLI flags override YAML and text-file settings.
 
@@ -218,22 +248,22 @@ uv run gemini-video-prompts prompts/example_image_batch.yaml --mode image --plan
 Limit the batch:
 
 ```bash
-gemini-video-prompts prompts/example_batch.txt --limit 2
+uv run gemini-video-prompts prompts/example_batch.txt --limit 2
 ```
 
 Use a different output root:
 
 ```bash
-gemini-video-prompts prompts/example_batch.yaml --out-root /tmp/gemini-videos
+uv run gemini-video-prompts prompts/example_batch.yaml --out-root /tmp/gemini-videos
 ```
 
 ## Notes
 
 - Google’s video generation flow is asynchronous, so jobs are run sequentially
   and polled until complete.
-- Image generation uses the same Gemini pattern as `tools/vision.py`: text or
-  input images go into `generate_content(...)`, and inline image parts are saved
-  as PNGs.
+- Image generation uses the standard `generate_content(...)` flow: text (and
+  optional input images) go in, inline image parts come out and are saved as
+  PNGs.
 - The tool is intentionally model-string driven. If your teammate gets access to
   a newer preview model, they can pass it with `--model` or `GEMINI_VIDEO_MODEL`.
 - Image mode also supports `GEMINI_IMAGE_MODEL`.
