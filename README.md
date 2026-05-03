@@ -13,7 +13,7 @@ API flow documented by Google:
 The defaults now follow two tracks:
 
 - video default model: `veo-3.1-fast-generate-preview`
-- image default model: `gemini-3.1-flash-image-preview`
+- image default model: `gemini-3-pro-image-preview`
 
 The actual model is always configurable so a teammate with access to a newer
 preview can swap in a different model code without editing the code.
@@ -75,7 +75,7 @@ Current defaults in the standalone CLI:
 
 - mode: `video`
 - video model: `veo-3.1-fast-generate-preview`
-- image model: `gemini-3.1-flash-image-preview`
+- image model: `gemini-3-pro-image-preview`
 - image temperature: `0.7`
 - image num outputs: `1`
 - video poll interval: `10` seconds
@@ -184,7 +184,10 @@ CLI flags override YAML and text-file settings.
 
 ## Output Layout
 
-Outputs are written under `out/` by default:
+Outputs are written under `out/` by default. Relative `--out-root` paths
+(including the default `out/`) resolve against the repo root, not your current
+working directory — so renders collect in `<repo>/out/...` regardless of where
+you invoke the CLI from. Pass an absolute path or `~/...` to override.
 
 ```text
 out/

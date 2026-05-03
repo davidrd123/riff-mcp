@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
 
 
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
-DEFAULT_IMAGE_MODEL = "gemini-3.1-flash-image-preview"
+DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
 DEFAULT_IMAGE_TEMPERATURE = 0.7
 BLOCK_SEPARATOR = re.compile(r"(?m)^\s*---+\s*$")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
