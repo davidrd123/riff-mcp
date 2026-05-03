@@ -745,7 +745,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Batch Gemini image or video generation from text or YAML prompt files."
     )
-    parser.add_argument("batch", help="Path to a .txt, .yaml, or .yml batch file.")
+    parser.add_argument(
+        "batch",
+        nargs="?",
+        help="Path to a .txt, .yaml, or .yml batch file. Omit when using --prompt.",
+    )
+    parser.add_argument(
+        "--prompt",
+        help="Inline prompt text. Mutually exclusive with a batch file argument.",
+    )
+    parser.add_argument(
+        "--image",
+        dest="inline_image",
+        help="Single input image for the inline prompt (relative paths resolve against cwd).",
+    )
+    parser.add_argument(
+        "--images",
+        dest="inline_images",
+        help="Comma-separated input image paths for the inline prompt.",
+    )
+    parser.add_argument(
+        "--title",
+        dest="inline_title",
+        help="Optional title for the inline prompt (defaults to first words of the prompt).",
+    )
     parser.add_argument(
         "--mode",
         choices=["image", "video"],
@@ -792,12 +815,36 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv or sys.argv[1:])
-    batch_path = Path(args.batch).expanduser().resolve()
-    if not batch_path.is_file():
-        print(f"Batch file not found: {batch_path}", file=sys.stderr)
+
+    if args.prompt and args.batch:
+        print("Specify either a batch file or --prompt, not both.", file=sys.stderr)
+        return 2
+    if not args.prompt and not args.batch:
+        print("Provide a batch file path or --prompt.", file=sys.stderr)
         return 2
 
-    defaults, jobs_raw = batch_defaults_and_jobs(batch_path, args.format)
+    if args.prompt:
+        batch_path = (Path.cwd() / "<inline>").resolve()
+        inline_job: dict[str, Any] = {
+            "prompt": args.prompt,
+            "source_index": 1,
+            "source_format": "inline",
+        }
+        if args.inline_title:
+            inline_job["title"] = args.inline_title
+        if args.inline_image:
+            inline_job["image"] = args.inline_image
+        if args.inline_images:
+            inline_job["images"] = [
+                part.strip() for part in args.inline_images.split(",") if part.strip()
+            ]
+        defaults, jobs_raw = {}, [inline_job]
+    else:
+        batch_path = Path(args.batch).expanduser().resolve()
+        if not batch_path.is_file():
+            print(f"Batch file not found: {batch_path}", file=sys.stderr)
+            return 2
+        defaults, jobs_raw = batch_defaults_and_jobs(batch_path, args.format)
     cli_overrides = {
         "mode": args.mode,
         "model": args.model,
