@@ -1,10 +1,19 @@
 # MCP Layer — Design
 
-**Status:** Draft, pre-implementation — v4
+**Status:** Draft, pre-implementation — v5
 **Author:** David Dickinson + Claude
 **Last updated:** 2026-05-08
 
 Wrap the existing `gemini-video-prompts` CLI as an MCP server, and build a separate media-analysis MCP, so Claude Code can invoke generation and evaluation as typed tool calls instead of shelling out to `Bash → uv run`.
+
+## v5 changes from v4
+
+- **Fixed reference token syntax** to bracket form (`[Image1]`, `[Video1]`, `[Audio1]`) per Replicate Seedance schema descriptions. Earlier `@Image1` in the return example was inconsistent with the convention paragraph.
+- **Provider-truthful tokens.** The `references[].token` field is the provider's actual syntax — Replicate-Seedance returns `[Image1]`; a future Fal adapter returns whatever Fal accepts (likely `@Image1`). No translation across providers; the agent pastes the token verbatim.
+- **Fixed mode/exclusivity grouping.** Only `reference_images` is mutually exclusive with `image`/`last_frame_image`. `reference_videos` and `reference_audios` can layer on top of any mode. Signature comments + validation now agree.
+- **Added 12-file total reference cap** per `seedance-prompting-guide.md:23` (per-category caps sum to 15 but 12 is the total ceiling; not enforced by Replicate schema, enforced by us).
+- **Made Replicate sidecar sanitization explicit** in `seedance.py`. `replicate_min.generate()`'s built-in filter only excludes legacy keys; Seedance handles live under different keys (`last_frame_image`, `reference_images`, etc.) and would leak as file handles into returned JSON without a separate clean-params dict.
+- **Defined `dry_run=True` return shape** for both `generate_image` and `generate_video`. Status becomes `"planned"`; `outputs`/`metrics` omitted; `projected_job_dir` provided.
 
 ## v4 changes from v3
 
@@ -257,11 +266,12 @@ This is **not a wrapper around `cli.py:generate_job`.** Veo and Seedance share n
 def generate_video(
     prompt: str,
     model: str = "bytedance/seedance-2.0",
-    # Mode A: first/last frame (mutually exclusive with reference_images)
+    # First/last-frame inputs (mutually exclusive with reference_images)
     image: Optional[str] = None,                    # first frame
     last_frame_image: Optional[str] = None,         # last frame; requires image
-    # Mode B: reference inputs (mutually exclusive with image/last_frame_image)
+    # Identity/style references (mutually exclusive with image/last_frame_image)
     reference_images: Optional[List[str]] = None,   # ≤9, prompt tokens [Image1]..[Image9]
+    # Motion/audio references (layerable on either mode above; not mutually exclusive)
     reference_videos: Optional[List[str]] = None,   # ≤3, total ≤15s, [Video1]..[Video3]
     reference_audios: Optional[List[str]] = None,   # ≤3, total ≤15s, [Audio1]..[Audio3]
     # Output controls
@@ -281,7 +291,8 @@ def generate_video(
 
 - `image` or `last_frame_image` set AND any of `reference_images` set → mutually exclusive per schema
 - `last_frame_image` set without `image` → "last_frame_image requires a first frame"
-- `len(reference_images) > 9`, `len(reference_videos) > 3`, `len(reference_audios) > 3` → schema cap exceeded
+- `len(reference_images) > 9`, `len(reference_videos) > 3`, `len(reference_audios) > 3` → per-type cap exceeded
+- `len(reference_images) + len(reference_videos) + len(reference_audios) > 12` → total reference cap exceeded (per `seedance-prompting-guide.md:23`)
 - `duration` not in `{-1, 1..15}` → out of range
 - `reference_audios` set but no `image`/`reference_images`/`reference_videos` → schema requires anchor
 - `resolution` not in `{"480p","720p","1080p"}` → invalid
@@ -292,6 +303,8 @@ Strictness here is deliberate: Replicate rejects invalid combos with opaque API 
 **Why `generate_audio=False` default vs. schema's `True`.** Production usage tends to replace gen-audio with edited score in post; firing every job with audio wastes time and credits. Override on the call when audio is wanted.
 
 **Reference token convention.** Seedance correlates prompt mentions to inputs via `[Image1]..[Image9]`, `[Video1]..[Video3]`, `[Audio1]..[Audio3]`. The agent uses the `seedance-prompting` skill to write the prompt; the MCP tool just passes the array order through. The return shape includes a soft validation warning if any uploaded slot is not named in prompt text.
+
+**Provider-truthful tokens.** The `references[].token` field is the provider's actual syntax — Replicate-Seedance returns bracket form (`[Image1]`); a future Fal adapter would return whatever Fal accepts (likely `@Image1`). The agent reads `token` and pastes it into the prompt — never translates between providers. The `role` field stays provider-agnostic (`FIRST_FRAME`, `LAST_FRAME`, `REFERENCE_IMAGE`, `REFERENCE_VIDEO`, `REFERENCE_AUDIO`).
 
 **Implementation outline.** `seedance.py`:
 
@@ -319,11 +332,22 @@ def check_prompt_references(prompt: str, references: list[dict]) -> list[str]:
     ...
 
 def run_seedance_job(
-    *, params, image_path, last_frame_path, ref_image_paths, ref_video_paths,
-    ref_audio_paths, out_dir, base_name, timeout_s,
+    *, api_params, return_params, image_path, last_frame_path,
+    ref_image_paths, ref_video_paths, ref_audio_paths,
+    out_dir, base_name, timeout_s,
 ) -> dict:
-    """Open all file handles, call replicate_min.generate(), return sidecar.
-    Owns the file-handle lifecycle (try/finally close on every handle)."""
+    """Build api_params (with file handles for image/last_frame_image/
+    reference_images/reference_videos/reference_audios), call
+    replicate_min.generate(), then replace the sidecar's `inputs` and
+    `resolved_params` with `return_params` (string paths only — never file
+    handles). Owns the file-handle lifecycle (try/finally close on every
+    handle).
+
+    Why explicit sanitization is required: replicate_min.generate()'s built-in
+    filter (replicate_min.py:160-161) only excludes legacy keys (image,
+    image_input, input_images). Seedance handles live under last_frame_image,
+    reference_images, reference_videos, reference_audios — those would leak as
+    file handles into returned JSON without this step."""
     ...
 ```
 
@@ -345,8 +369,8 @@ The `replicate_min.py` borrowed from DMPOST31 is *only* extended in one place: `
     "generate_audio": false, "seed": null
   },
   "references": [
-    { "token": "@Image1", "path": "/abs/first.png",  "role": "FIRST_FRAME" },
-    { "token": "@Image2", "path": "/abs/last.png",   "role": "LAST_FRAME" }
+    { "token": "[Image1]", "path": "/abs/first.png",  "role": "FIRST_FRAME" },
+    { "token": "[Image2]", "path": "/abs/last.png",   "role": "LAST_FRAME" }
   ],
   "validation_warnings": [],
   "job_dir": "/Users/.../out/2026-05-08/bytedance-seedance-2.0/01_<title>_<hash>",
@@ -371,6 +395,29 @@ The `replicate_min.py` borrowed from DMPOST31 is *only* extended in one place: `
 ```
 
 `media_info` is probed via `ffprobe` after download. `ffprobe` is a system dep — same as MCP #2's frame-extraction tool, so no new install pain.
+
+**`dry_run=True` return shape.** When `dry_run=True`, no API call fires, no file handles open, no output writes. Status becomes `"planned"`; `outputs`/`metrics`/`created_at`/`model_version` are omitted; `projected_job_dir` is the path that *would* be created on a real run:
+
+```jsonc
+{
+  "status": "planned",
+  "title": "...",
+  "model": "bytedance/seedance-2.0",
+  "mode": "first_last_frames",
+  "prompt": "...",
+  "resolved_params": {
+    "duration": 5, "resolution": "720p", "aspect_ratio": "16:9",
+    "generate_audio": false, "seed": null
+  },
+  "references": [
+    { "token": "[Image1]", "path": "/abs/first.png", "role": "FIRST_FRAME" }
+  ],
+  "validation_warnings": [],
+  "projected_job_dir": "/Users/.../out/2026-05-08/bytedance-seedance-2.0/01_<title>_<hash>"
+}
+```
+
+`generate_image` `dry_run=True` returns the resolved job summary from the existing CLI helper `summarize_job()` (`cli.py:402-423`) plus `status: "planned"` and `projected_job_dir`. Same shape contract: API call suppressed, paths projected, no file writes.
 
 ### Borrow map
 
@@ -743,6 +790,8 @@ Captured 2026-05-08 from `bytedance/seedance-2.0` Replicate input schema. Source
 - A and B cannot both be set.
 
 **Anchored requirement:** `reference_audios` requires at least one of `image` / `reference_images` / `reference_videos`.
+
+**Total cap (vault, not schema):** `len(reference_images) + len(reference_videos) + len(reference_audios) ≤ 12` per `seedance-prompting-guide.md:23`. Per-type caps sum to 15 (9+3+3); 12 is the working ceiling. Replicate's schema does not enforce this — we do.
 
 **Field summary:**
 
