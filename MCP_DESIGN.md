@@ -1,10 +1,17 @@
 # MCP Layer — Design
 
-**Status:** Draft, pre-implementation — v5
+**Status:** Draft, pre-implementation — v6
 **Author:** David Dickinson + Claude
 **Last updated:** 2026-05-08
 
 Wrap the existing `gemini-video-prompts` CLI as an MCP server, and build a separate media-analysis MCP, so Claude Code can invoke generation and evaluation as typed tool calls instead of shelling out to `Bash → uv run`.
+
+## v6 changes from v5
+
+- **Demoted 12-file total cap from hard validation error to soft `validation_warning`.** The cap comes from the vault guide (`seedance-prompting-guide.md:23`), not the Replicate schema. Hard-failing a schema-valid request would violate the portability principle — non-Patrick users would hit a wall on a request the provider would accept. Cap still surfaces as a warning so Patrick's workflow gets the signal. A configurable `reference_policy` arg (schema-only vs. production-strict) is deferred to v2; current default is always-warn, never-error.
+- **Clarified `check_prompt_references()` uses generated provider tokens** from the references list, not hardcoded `[Image1]` regex. Same code works correctly across Replicate, Fal, or any future provider — no per-provider conditional logic.
+- **Broadened `reference_images` signature comment** from "identity/style refs" to "image refs (identity, style, composition)" — Replicate schema describes all three uses.
+- **Clarified background prior-art note:** vault guide uses `@Image1` shorthand; Replicate schema uses `[Image1]`. MCP returns provider-truthful tokens — agents using the vault guide as a writing reference paste the bracket form from `references[].token`, not the guide's `@` shorthand.
 
 ## v5 changes from v4
 
@@ -76,7 +83,7 @@ The two friction points are step 1 (long bespoke shell strings) and step 4 (unst
 - **`gemini-video-prompts/src/gemini_video_prompts/cli.py`** — clean separation between argparse plumbing and `generate_image_job(...)` / `generate_job(...)` workers. The image worker (`cli.py:622-733`) returns a well-shaped result dict and is reusable. **However**, it expects a *fully resolved* job dict (`cli.py:309-375` is the resolver), so the MCP can't call it directly without first reproducing or refactoring that resolver. See §Step 0 below.
 - **`/Users/daviddickinson/Projects/LLM/DMPOST31/ae-mcp-dmpost/dmpost-gemini-mcp/server.py`** — FastMCP-based server using the same Python/Gemini stack. Demonstrates `@mcp.tool()` shape, error-code idiom, date-stamped output dirs, and Replicate integration via `vendor/replicate_min.py`. The `nano_segment` tool (`server.py:298-439`) is a working example of a Replicate-backed tool, but it's single-file-input — Seedance needs multi-file. The `nano_analyze_media` tool (`server.py:443-514`) demonstrates Gemini multimodal analysis with video-upload + poll; we lift its `upload_and_poll_video` / `cleanup_uploaded` helpers for `describe_video` / `score_video`.
 - **`DMPOST31/.../vendor/replicate_min.py`** — minimal `replicate.run()` wrapper with file-handle lifecycle, sidecar dict, metrics. The lower-level `generate()` (line 107) takes a pure params dict and is the right entry point for Seedance; the higher-level `edit()` (line 173) only handles a single image and is too narrow for our needs.
-- **Seedance prompting guide** (`vault_gml/visual/seedance-prompting-guide.md:23-42`) — three named modes (`text_to_video`, `first_last_frames`, `omni_reference`); upload-order @reference syntax; explicit role assignment required because "the model does not infer purpose."
+- **Seedance prompting guide** (`vault_gml/visual/seedance-prompting-guide.md:23-42`) — three named modes (`text_to_video`, `first_last_frames`, `omni_reference`); upload-order reference syntax; explicit role assignment required because "the model does not infer purpose." **Caveat:** the guide uses `@Image1` shorthand throughout, but the Replicate Seedance schema accepts bracket tokens (`[Image1]`). The MCP returns the provider's true syntax; agents using the vault guide as a *writing* reference should paste the bracket form from `references[].token` rather than the guide's `@` shorthand.
 
 ---
 
@@ -269,7 +276,7 @@ def generate_video(
     # First/last-frame inputs (mutually exclusive with reference_images)
     image: Optional[str] = None,                    # first frame
     last_frame_image: Optional[str] = None,         # last frame; requires image
-    # Identity/style references (mutually exclusive with image/last_frame_image)
+    # Image references — identity, style, or composition (mutually exclusive with image/last_frame_image)
     reference_images: Optional[List[str]] = None,   # ≤9, prompt tokens [Image1]..[Image9]
     # Motion/audio references (layerable on either mode above; not mutually exclusive)
     reference_videos: Optional[List[str]] = None,   # ≤3, total ≤15s, [Video1]..[Video3]
@@ -291,14 +298,20 @@ def generate_video(
 
 - `image` or `last_frame_image` set AND any of `reference_images` set → mutually exclusive per schema
 - `last_frame_image` set without `image` → "last_frame_image requires a first frame"
-- `len(reference_images) > 9`, `len(reference_videos) > 3`, `len(reference_audios) > 3` → per-type cap exceeded
-- `len(reference_images) + len(reference_videos) + len(reference_audios) > 12` → total reference cap exceeded (per `seedance-prompting-guide.md:23`)
+- `len(reference_images) > 9`, `len(reference_videos) > 3`, `len(reference_audios) > 3` → per-type cap exceeded (schema-enforced)
 - `duration` not in `{-1, 1..15}` → out of range
 - `reference_audios` set but no `image`/`reference_images`/`reference_videos` → schema requires anchor
 - `resolution` not in `{"480p","720p","1080p"}` → invalid
 - `aspect_ratio` not in the schema enum → invalid
 
 Strictness here is deliberate: Replicate rejects invalid combos with opaque API errors. We want a clean MCP error code instead.
+
+**Soft warnings (non-blocking, surface in `validation_warnings[]`):**
+
+- `len(reference_images) + len(reference_videos) + len(reference_audios) > 12` — total reference cap from the vault guide (`seedance-prompting-guide.md:23`); per-type caps sum to 15 (9+3+3), but 12 is the working ceiling in production. Replicate's schema does not enforce this, so we don't either — but Patrick's workflow gets the signal.
+- Any uploaded reference slot whose `token` does not appear in the prompt text — Seedance won't know what role to assign it.
+
+Soft-warning checks live in `seedance.py` and never block firing. A future `reference_policy="production"` arg could promote selected warnings to errors, but v1 is always-warn-never-error to keep portability beyond Patrick's vault.
 
 **Why `generate_audio=False` default vs. schema's `True`.** Production usage tends to replace gen-audio with edited score in post; firing every job with audio wastes time and credits. Override on the call when audio is wanted.
 
@@ -328,7 +341,19 @@ def build_references_map(...) -> list[dict]:
     ...
 
 def check_prompt_references(prompt: str, references: list[dict]) -> list[str]:
-    """Soft regex check: warn if any uploaded slot isn't named in prompt text."""
+    """Soft check: for each {token, path, role} in `references`, scan `prompt`
+    for that exact provider token (e.g. "[Image1]" for Replicate-Seedance,
+    "@Image1" for a future Fal adapter). Return a warning string for any slot
+    whose token does not appear in the prompt text.
+
+    Crucially uses tokens FROM the references list — never hardcoded bracket
+    or @-syntax — so the same code stays correct across providers."""
+    ...
+
+def check_total_reference_cap(references: list[dict]) -> list[str]:
+    """Soft check: warn if total references > 12 (vault working ceiling per
+    seedance-prompting-guide.md:23). Per-type caps are schema-enforced
+    elsewhere as hard errors."""
     ...
 
 def run_seedance_job(
@@ -773,6 +798,7 @@ Step 0 is small but critical — without it, Step 2 has to fake CLI internals. S
 - **Vault-aware tools** (`log_prompt_entry`, `mark_keyframe_approved`). Tempting but reverses the Portability Principle. Build a separate vault-aware MCP if desired.
 - **A/B telemetry tooling.** Side-file logging is manual in v1; a dedicated `analysis_log` field in returns + a small reporter script would scale better.
 - **`structured_intent`** as a typed alternative to freeform `intent` — captures brief in fields like `genre`, `register`, `must_preserve`, `must_change`. Defer; freeform is more flexible until patterns emerge.
+- **`reference_policy: Literal["schema", "production"]` arg** on `generate_video`. Default `"schema"` (current v1 behavior — schema-enforced errors only, vault rules as soft warnings). Optional `"production"` would promote selected warnings to errors for callers who want strict vault-style enforcement. Add when a workflow actively wants the hard-fail behavior; keeping warn-only for v1 to honor the portability principle.
 - **`compare_videos`.** Same as `compare_images` but for clips. Add when first asked for.
 - **Fal video adapter** as a sibling `fal.py` module.
 
@@ -791,7 +817,7 @@ Captured 2026-05-08 from `bytedance/seedance-2.0` Replicate input schema. Source
 
 **Anchored requirement:** `reference_audios` requires at least one of `image` / `reference_images` / `reference_videos`.
 
-**Total cap (vault, not schema):** `len(reference_images) + len(reference_videos) + len(reference_audios) ≤ 12` per `seedance-prompting-guide.md:23`. Per-type caps sum to 15 (9+3+3); 12 is the working ceiling. Replicate's schema does not enforce this — we do.
+**Total cap (vault, not schema):** `len(reference_images) + len(reference_videos) + len(reference_audios) ≤ 12` per `seedance-prompting-guide.md:23`. Per-type caps sum to 15 (9+3+3); 12 is the working ceiling. Replicate's schema does not enforce this — we surface it as a soft `validation_warning`, never a hard error, to keep portability beyond Patrick's vault.
 
 **Field summary:**
 
