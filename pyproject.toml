@@ -3,27 +3,31 @@ name = "gemini-video-prompts"
 version = "0.1.0"
 description = "Batch Gemini video generation from text or YAML prompt files."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "google-genai>=1.47.0",
     "pillow>=10.4.0",
     "PyYAML>=6.0.2",
     "python-dotenv>=1.0.1",
+    "mcp[cli]>=1.0.0",
+    "replicate>=0.34.0",
 ]
 
 [project.scripts]
 gemini-video-prompts = "gemini_video_prompts.cli:main"
+gemini-prompts-mcp = "gemini_video_prompts_mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/gemini_video_prompts"]
+packages = ["src/gemini_video_prompts", "src/gemini_video_prompts_mcp"]
 
 [tool.hatch.build.targets.sdist]
 include = [
   "src/gemini_video_prompts",
+  "src/gemini_video_prompts_mcp",
   "pyproject.toml",
   "README.md",
   ".env.example",
