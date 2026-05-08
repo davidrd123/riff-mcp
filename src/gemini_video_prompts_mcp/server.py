@@ -99,12 +99,6 @@ def generate_image(
     """
     if num_outputs < 1 or num_outputs > 4:
         raise RuntimeError("INVALID_INPUT: num_outputs must be between 1 and 4")
-    if image is not None and not Path(image).expanduser().is_file():
-        raise RuntimeError(f"IMAGE_NOT_FOUND: {image}")
-    if images:
-        for path_str in images:
-            if not Path(path_str).expanduser().is_file():
-                raise RuntimeError(f"IMAGE_NOT_FOUND: {path_str}")
 
     batch_path = (Path.cwd() / "<inline>").resolve()
     job = build_resolved_image_job(
@@ -129,6 +123,15 @@ def generate_image(
         summary["status"] = "planned"
         summary["projected_job_dir"] = _project_job_dir(job)
         return summary
+
+    # Asset existence checks live below the dry_run return — dry_run mirrors
+    # the CLI's --plan and must not require referenced files to exist yet.
+    if image is not None and not Path(image).expanduser().is_file():
+        raise RuntimeError(f"IMAGE_NOT_FOUND: {image}")
+    if images:
+        for path_str in images:
+            if not Path(path_str).expanduser().is_file():
+                raise RuntimeError(f"IMAGE_NOT_FOUND: {path_str}")
 
     client, gtypes = init_client()
     out_root_path = job["out_root"]

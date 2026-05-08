@@ -142,8 +142,9 @@ def build_image_config(*, aspect_ratio: Optional[str], image_size: Optional[str]
         return None
     if not hasattr(gtypes, "ImageConfig"):
         raise RuntimeError(
-            "Installed google-genai does not expose types.ImageConfig. "
-            "Upgrade the package before using aspect_ratio or image_size."
+            "IMAGE_CONFIG_UNSUPPORTED: Installed google-genai does not expose "
+            "types.ImageConfig. Upgrade the package before using aspect_ratio "
+            "or image_size."
         )
     return gtypes.ImageConfig(  # type: ignore[call-arg]
         aspect_ratio=aspect_ratio or None,
@@ -771,7 +772,7 @@ def generate_image_job(
 
     generated_images = generated_images[:requested_outputs]
     if not generated_images:
-        raise RuntimeError("No image parts returned from Gemini.")
+        raise RuntimeError("NO_IMAGE_RETURNED: No image parts returned from Gemini.")
 
     outputs = save_generated_images(
         generated_images=generated_images,
