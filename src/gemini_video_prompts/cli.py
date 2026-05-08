@@ -306,6 +306,70 @@ def batch_defaults_and_jobs(batch_path: Path, fmt: str) -> tuple[dict[str, Any],
     raise RuntimeError(f"Unsupported format: {fmt}")
 
 
+def build_resolved_image_job(
+    *,
+    prompt: str,
+    title: Optional[str] = None,
+    model: Optional[str] = None,
+    system_prompt: Optional[str] = None,
+    image: Optional[str] = None,
+    images: Optional[list[str]] = None,
+    aspect_ratio: Optional[str] = None,
+    image_size: Optional[str] = None,
+    temperature: Optional[float] = None,
+    num_outputs: Optional[int] = None,
+    out_root: Optional[str] = None,
+    config: Optional[dict[str, Any]] = None,
+    source_index: int = 1,
+    source_format: str = "inline",
+    batch_file: Optional[str] = None,
+) -> dict[str, Any]:
+    """Build a resolved image-mode job dict from inline parameters.
+
+    Used by both the CLI inline-mode (via ``resolved_job`` dispatching for
+    image mode) and the gemini-prompts-mcp ``generate_image`` tool. Mirrors
+    the shape produced by ``resolved_job`` for image-mode jobs.
+    """
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise RuntimeError("prompt is required")
+
+    resolved_title = title if title else prompt_stem(prompt)
+    resolved_model = (
+        model if model else (os.getenv("GEMINI_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL)
+    )
+    resolved_temperature = (
+        temperature if temperature is not None else DEFAULT_IMAGE_TEMPERATURE
+    )
+    resolved_num_outputs = num_outputs if num_outputs is not None else 1
+    resolved_system_prompt = system_prompt if system_prompt is not None else ""
+    resolved_out_root = resolve_output_root(str(out_root) if out_root else "out")
+
+    return {
+        "mode": "image",
+        "title": str(resolved_title),
+        "prompt": prompt.strip(),
+        "model": str(resolved_model),
+        "duration_seconds": None,
+        "aspect_ratio": aspect_ratio,
+        "enhance_prompt": None,
+        "number_of_videos": None,
+        "image": image,
+        "images": images,
+        "reference_images": None,
+        "video": None,
+        "video_uri": None,
+        "num_outputs": resolved_num_outputs,
+        "temperature": resolved_temperature,
+        "system_prompt": resolved_system_prompt,
+        "image_size": image_size,
+        "config": dict(config or {}),
+        "out_root": resolved_out_root,
+        "source_index": source_index,
+        "source_format": source_format,
+        "batch_file": batch_file,
+    }
+
+
 def resolved_job(
     *,
     batch_path: Path,
@@ -331,20 +395,32 @@ def resolved_job(
     if not isinstance(prompt, str) or not prompt.strip():
         raise RuntimeError(f"Job {job.get('source_index')} has no prompt.")
 
-    title = str(merged.get("title") or prompt_stem(prompt))
     mode = str(merged.get("mode") or "video").strip().lower()
     if mode not in {"video", "image"}:
         raise RuntimeError(f"Unsupported mode for job {job.get('source_index')}: {mode}")
+
     if mode == "image":
-        default_model = os.getenv("GEMINI_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL
-        default_temperature = DEFAULT_IMAGE_TEMPERATURE
-        default_num_outputs = 1
-        default_system_prompt = ""
-    else:
-        default_model = os.getenv("GEMINI_VIDEO_MODEL") or DEFAULT_VIDEO_MODEL
-        default_temperature = None
-        default_num_outputs = None
-        default_system_prompt = None
+        return build_resolved_image_job(
+            prompt=prompt,
+            title=merged.get("title"),
+            model=merged.get("model"),
+            system_prompt=merged.get("system_prompt"),
+            image=merged.get("image"),
+            images=merged.get("images"),
+            aspect_ratio=merged.get("aspect_ratio"),
+            image_size=merged.get("image_size"),
+            temperature=merged.get("temperature"),
+            num_outputs=merged.get("num_outputs"),
+            out_root=merged.get("out_root"),
+            config=merged.get("config"),
+            source_index=merged.get("source_index"),
+            source_format=merged.get("source_format"),
+            batch_file=str(batch_path.resolve()),
+        )
+
+    # Video mode
+    title = str(merged.get("title") or prompt_stem(prompt))
+    default_model = os.getenv("GEMINI_VIDEO_MODEL") or DEFAULT_VIDEO_MODEL
     model = str(merged.get("model") or default_model)
     out_root = resolve_output_root(str(merged.get("out_root") or "out"))
 
@@ -362,9 +438,9 @@ def resolved_job(
         "reference_images": merged.get("reference_images"),
         "video": merged.get("video"),
         "video_uri": merged.get("video_uri"),
-        "num_outputs": merged.get("num_outputs", default_num_outputs),
-        "temperature": merged.get("temperature", default_temperature),
-        "system_prompt": merged.get("system_prompt", default_system_prompt),
+        "num_outputs": merged.get("num_outputs"),
+        "temperature": merged.get("temperature"),
+        "system_prompt": merged.get("system_prompt"),
         "image_size": merged.get("image_size"),
         "config": dict(merged.get("config") or {}),
         "out_root": out_root,
