@@ -246,6 +246,31 @@ def score_image(
         temperature=temperature,
     )
 
+    # Strict post-parse validation: Gemini's ``response_schema`` only enforces
+    # the structural shape (list of {name, score, notes}); it can't constrain
+    # which criterion names appear. Without this check, a model that drops a
+    # requested dim or invents a new one passes silently and the
+    # name-keyed dict below quietly omits or accepts bogus entries.
+    parsed_names = [ev.name for ev in parsed.evaluations]
+    expected = set(criteria_list)
+    actual = set(parsed_names)
+    if actual != expected or len(parsed_names) != len(actual):
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        duplicates = sorted({n for n in parsed_names if parsed_names.count(n) > 1})
+        details = []
+        if missing:
+            details.append(f"missing={missing}")
+        if unexpected:
+            details.append(f"unexpected={unexpected}")
+        if duplicates:
+            details.append(f"duplicates={duplicates}")
+        raise RuntimeError(
+            f"SCHEMA_MISMATCH: Gemini returned criterion names that do not "
+            f"match the request exactly. Expected: {sorted(expected)}. "
+            + "; ".join(details)
+        )
+
     # Transform list-of-evaluations to dict for caller convenience
     evaluations_dict = {
         ev.name: {"score": ev.score, "notes": ev.notes}
