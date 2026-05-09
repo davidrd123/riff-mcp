@@ -2,7 +2,7 @@
 
 **Status:** v1 implemented through Step 8 — v7 design record
 **Author:** David Dickinson + Claude
-**Last updated:** 2026-05-08
+**Last updated:** 2026-05-09
 
 Wrap the existing `gemini-video-prompts` CLI as an MCP server, and build a separate media-analysis MCP, so Claude Code can invoke generation and evaluation as typed tool calls instead of shelling out to `Bash → uv run`.
 
@@ -805,21 +805,127 @@ Step 0 was the critical unlock: without it, Step 2 would have had to fake CLI in
 
 ## Future / v2
 
-- **Provider abstraction** for video: once Fal lands, factor `provider` arg or sibling tool. Defer until a second provider exists.
-- **Async video jobs** for `generate_video`. Split the current blocking path into `start_video_job` / `get_video_job` while keeping blocking `generate_video` as a convenience wrapper. Local polling should be the default fallback, but Replicate webhooks are the better long-job path when the caller can provide a public HTTPS receiver:
-  - `start_video_job(...)` creates a Replicate prediction with `webhook` and `webhook_events_filter=["completed"]`, then returns `{job_id, prediction_id, status, job_dir}` immediately.
-  - The webhook receiver verifies Replicate's signature, handles duplicate/out-of-order deliveries idempotently, downloads outputs before provider URLs expire, and writes local `job.json` / `status.json`.
-  - `get_video_job(job_id)` reads local status first and can fall back to Replicate prediction polling when no webhook is configured or the webhook is delayed.
-  - Do not make stdio MCP itself the webhook receiver; it needs a separate HTTP process or an existing app endpoint. Local development needs an HTTPS tunnel such as Cloudflare Tunnel or ngrok.
-  - Current blocker: `replicate_min.generate()` uses blocking `replicate.run(...)`; v2 needs a non-blocking prediction-create helper alongside it.
-- **`plan_job` standalone tool.** If a workflow emerges where the agent wants pre-flight without a tool call to a gen function, revisit. For now `dry_run` covers it.
-- **Streaming results** for analysis tools. Useful for long describe-mode outputs.
-- **Vault-aware tools** (`log_prompt_entry`, `mark_keyframe_approved`). Tempting but reverses the Portability Principle. Build a separate vault-aware MCP if desired.
-- **A/B telemetry tooling.** Side-file logging is manual in v1; a dedicated `analysis_log` field in returns + a small reporter script would scale better.
-- **`structured_intent`** as a typed alternative to freeform `intent` — captures brief in fields like `genre`, `register`, `must_preserve`, `must_change`. Defer; freeform is more flexible until patterns emerge.
-- **`reference_policy: Literal["schema", "production"]` arg** on `generate_video`. Default `"schema"` (current v1 behavior — schema-enforced errors only, vault rules as soft warnings). Optional `"production"` would promote selected warnings to errors for callers who want strict vault-style enforcement. Add when a workflow actively wants the hard-fail behavior; keeping warn-only for v1 to honor the portability principle.
-- **`compare_videos`.** Same as `compare_images` but for clips. Add when first asked for.
-- **Fal video adapter** as a sibling `fal.py` module.
+V2 should be scoped as a set of separable tracks. They do not all need to ship together.
+
+### Option A: Local Async Jobs
+
+Baseline v2 candidate.
+
+Add:
+- `start_video_job(...)` - creates the Replicate prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
+- `get_video_job(job_id)` - reads local `status.json` / `job.json`, then optionally polls Replicate by `prediction_id`.
+- `cancel_video_job(job_id)` - cancels the provider prediction if still running.
+- A local jobs directory under the existing output root, with `status.json` as the durable coordination point.
+- Keep blocking `generate_video(...)` as a convenience wrapper around start + wait.
+
+Pros:
+- Solves long blocking MCP calls without requiring an HTTP server, public endpoint, or tunnel.
+- Works for local Codex / Claude Code usage.
+- Keeps the v1 return shape mostly intact.
+
+Cons:
+- Still polling-based.
+- Requires a non-blocking Replicate prediction-create helper alongside the current blocking `replicate_min.generate()` / `replicate.run(...)` path.
+
+### Option B: Webhook Completion
+
+Async jobs with provider-driven completion.
+
+Add:
+- Optional `webhook_url` arg to `start_video_job(...)`.
+- `webhook_events_filter=["completed"]` when creating the Replicate prediction.
+- A separate HTTP receiver process or app endpoint; stdio MCP itself should not receive webhooks.
+- Replicate signature verification.
+- Idempotent completion handling for duplicate or out-of-order deliveries.
+- Immediate output download before provider URLs expire.
+
+Pros:
+- Best long-job behavior for unattended runs.
+- Reduces polling and catches completed jobs even if the MCP client is not actively waiting.
+
+Cons:
+- Requires a public HTTPS endpoint. Local dev needs Cloudflare Tunnel, ngrok, or equivalent.
+- Adds operational surface area and webhook security requirements.
+
+Recommended stance: design for it in v2, but make local polling the required path and webhooks optional.
+
+### Option C: Closed Riff Loop
+
+Move from typed tools to a durable generate -> analyze -> choose -> iterate loop without becoming vault-specific.
+
+Add:
+- `compare_videos(...)`, parallel to `compare_images`.
+- JSONL audit trail keyed by `run_id` / `iteration_id`.
+- Generic lineage fields: prompt, references, outputs, scores, selected candidate, extracted visual tokens, next-prompt inputs.
+- Optional A/B telemetry for `describe_*` vs. `score_*`, replacing manual side-file notes.
+
+Pros:
+- Highest workflow value; this is the actual riff loop.
+- Gives us data on whether describe-mode or score-mode produces better next actions.
+
+Cons:
+- Return shapes need discipline so they stay portable and do not drift into vault-specific logging.
+
+### Option D: Provider Expansion
+
+Introduce video provider choice once a second provider is real.
+
+Possible shapes:
+- `provider="replicate" | "fal"` on `generate_video` / `start_video_job`.
+- Or sibling tools such as `generate_video_replicate(...)` and `generate_video_fal(...)`.
+- Or provider modules under a common internal interface while keeping the MCP tool surface stable.
+
+Pros:
+- Makes Fal or another video backend possible without rewriting callers.
+
+Cons:
+- Premature until Fal is actually used. With only one backend, a provider abstraction is mostly fake architecture.
+
+Recommended stance: defer beyond v2.0 unless a second provider becomes an active requirement.
+
+### Option E: After Effects / Mac Bridge
+
+Keep AE control out of `riff-mcp`.
+
+Boundary:
+- `riff-mcp` generates, analyzes, compares, and selects media.
+- A separate AE-specific MCP imports selected assets, places them in comps, updates layers, and renders previews.
+- `riff-mcp` should make this easier by returning better asset metadata: width, height, duration, fps, alpha/audio flags, model, prompt lineage, and selected candidate IDs.
+
+Pros:
+- Preserves portability.
+- Keeps Mac-only AE automation separate from media generation/evaluation.
+
+Cons:
+- Requires a second MCP and AE-specific scripting/automation work.
+
+### Recommended Sequence
+
+V2.0:
+- Local async jobs: `start_video_job`, `get_video_job`, optional `cancel_video_job`.
+- Durable local job status files.
+- Blocking `generate_video` preserved as a wrapper.
+- `compare_videos`.
+- JSONL iteration audit.
+- `.mcp.example.json` and a `doctor` command for `GEMINI_API_KEY`, `REPLICATE_API_TOKEN`, `ffmpeg`, `ffprobe`, imports, and writable output root.
+
+V2.1:
+- Optional webhook receiver path.
+- Replicate signature verification.
+- Completed-job output download and idempotent status updates.
+
+V2.2:
+- Provider abstraction only if Fal or another provider is actually in use.
+
+Separate track:
+- AE/Mac bridge MCP that consumes `riff-mcp` outputs instead of living inside this repo.
+
+Deferred from v1/v2 unless specifically needed:
+- Standalone `plan_job` tool; `dry_run` covers the current use case.
+- Streaming results for long analysis outputs.
+- Vault-aware tools such as `log_prompt_entry` or `mark_keyframe_approved`; those violate this repo's Portability Principle and belong in a separate vault-aware MCP.
+- `structured_intent`; freeform `intent` and `context` remain more flexible until repeated patterns emerge.
+- `reference_policy: Literal["schema", "production"]`; add when a workflow actively wants selected warnings promoted to hard errors.
 
 ---
 

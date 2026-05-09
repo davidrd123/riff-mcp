@@ -2,9 +2,9 @@
 
 Tools (per MCP_DESIGN.md sequencing):
 - describe_image, score_image     — Step 5 (this file)
-- describe_video, score_video     — Step 6 (pending)
-- extract_video_frames            — Step 7 (pending)
-- compare_images,                 — Step 8 (pending)
+- describe_video, score_video     — Step 6
+- extract_video_frames            — Step 7
+- compare_images,                 — Step 8
   extract_visual_tokens
 
 The describe / score split exists to A/B which judgment locus produces

@@ -8,21 +8,21 @@ Toolkit for the *riff* workflow — iteratively generate, analyze, and refine AI
 
 The name comes from the `generation-review-loop` skill's vocabulary for iterative prompt work — *the riff loop*: generate → review → extract → iterate. See [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
 
-It is built around the official `google-genai` Python SDK. Two generation flows
-are supported:
+The repo now has two generation paths:
 
-- **Image** — `client.models.generate_content(...)` with image response
-  modality, decoding inline image parts into PNGs.
-- **Video** — `client.models.generate_videos(...)`, polling the long-running
-  operation, then `client.files.download(...)` to save MP4s.
+- **Standalone CLI** — built around the official `google-genai` Python SDK for
+  Gemini image generation and the original Veo video batch flow.
+- **MCP generation server** — `generate_image` reuses the Gemini image worker;
+  `generate_video` uses Seedance 2.0 through Replicate.
 
-The defaults now follow two tracks:
+Current defaults:
 
-- video default model: `veo-3.1-fast-generate-preview`
-- image default model: `gemini-3-pro-image-preview`
+- CLI video default model: `veo-3.1-fast-generate-preview`
+- CLI/MCP image default model: `gemini-3-pro-image-preview`
+- MCP video default model: `bytedance/seedance-2.0`
 
-The actual model is always configurable so a teammate with access to a newer
-preview can swap in a different model code without editing the code.
+Model strings remain configurable so a teammate with access to a newer preview
+or provider model can swap it in without editing the code.
 
 ## Install
 
@@ -47,7 +47,10 @@ pip install -e .
 cp .env.example .env
 ```
 
-Then set `GEMINI_API_KEY` in `.env` or your shell.
+Then set the needed API tokens in `.env` or your shell:
+
+- `GEMINI_API_KEY` for CLI image/video generation and `media-analysis-mcp`
+- `REPLICATE_API_TOKEN` for MCP `generate_video`
 
 ## Quick Start
 
@@ -80,6 +83,41 @@ Override the model for a teammate who has access to a newer one:
 ```bash
 uv run gemini-video-prompts prompts/example_image_batch.txt --mode image --model gemini-2.5-flash-image
 ```
+
+## MCP Servers
+
+Run the generation server on stdio:
+
+```bash
+uv run gemini-prompts-mcp
+```
+
+Run the media-analysis server on stdio:
+
+```bash
+uv run media-analysis-mcp
+```
+
+Example MCP client config when the client launches from outside this repo:
+
+```json
+{
+  "mcpServers": {
+    "gemini-prompts-mcp": {
+      "command": "uv",
+      "args": ["--directory", "/Users/daviddickinson/Projects/Lora/riff-mcp", "run", "gemini-prompts-mcp"]
+    },
+    "media-analysis-mcp": {
+      "command": "uv",
+      "args": ["--directory", "/Users/daviddickinson/Projects/Lora/riff-mcp", "run", "media-analysis-mcp"]
+    }
+  }
+}
+```
+
+Running with `--directory` lets the servers find the repo-local `.env`. You can
+also provide `GEMINI_API_KEY` and `REPLICATE_API_TOKEN` directly through the MCP
+client's environment settings.
 
 ## Defaults
 
@@ -211,7 +249,7 @@ flags override them. Mode column shows where each key applies.
 | `image_size` | image | |
 | `image` | both | Single input image path |
 | `images` | both | List or comma-separated string of image paths |
-| `reference_images` | video | Explicit Veo 3.1 reference image entries with `reference_type` |
+| `reference_images` | video | Explicit Veo 3.1 reference image entries with `reference_type` in the standalone CLI |
 | `video` | video | Input video path |
 | `video_uri` | video | Input video URI |
 | `config` | both | Extra fields forwarded into the underlying generation config (`config.<key>: value` in text headers, nested mapping in YAML) |
@@ -266,12 +304,15 @@ uv run gemini-video-prompts prompts/example_batch.yaml --out-root /tmp/gemini-vi
 ## Notes
 
 - Google’s video generation flow is asynchronous, so jobs are run sequentially
-  and polled until complete.
+  and polled until complete in the standalone CLI.
+- MCP `generate_video` uses Replicate-Seedance, requires `REPLICATE_API_TOKEN`,
+  and blocks until the prediction completes or times out.
 - Image generation uses the standard `generate_content(...)` flow: text (and
   optional input images) go in, inline image parts come out and are saved as
   PNGs.
 - The tool is intentionally model-string driven. If your teammate gets access to
-  a newer preview model, they can pass it with `--model` or `GEMINI_VIDEO_MODEL`.
+  a newer CLI preview model, they can pass it with `--model` or
+  `GEMINI_VIDEO_MODEL`.
 - Image mode also supports `GEMINI_IMAGE_MODEL`.
 - `images` is a convenience shorthand for Veo 3.1 reference images. Those paths
   are converted into `reference_images` entries with `reference_type="asset"`
