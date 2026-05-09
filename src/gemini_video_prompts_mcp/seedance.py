@@ -22,10 +22,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from . import replicate_min
 
@@ -393,34 +393,13 @@ def probe_media_info(path: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def run_seedance_job(
-    *,
-    api_params: dict[str, Any],
-    return_params: dict[str, Any],
-    out_dir: Path,
-    base_name: str,
-    timeout_s: int = 600,
-    model_ref: str = SEEDANCE_MODEL_DEFAULT,
-) -> dict[str, Any]:
-    """Open file handles, call ``replicate_min.generate``, sanitize sidecar.
-
-    ``api_params`` carries string paths under ``image``/``last_frame_image``/
-    ``reference_*``; this function opens each as a binary handle, calls the
-    generic Replicate wrapper, then closes every handle in a ``finally`` block.
-
-    The returned sidecar's ``inputs`` and ``resolved_params`` are replaced
-    with ``return_params`` (string paths only). ``replicate_min``'s built-in
-    filter excludes only legacy keys (``image``, ``image_input``,
-    ``input_images``); Seedance handles live under ``last_frame_image``,
-    ``reference_images``, ``reference_videos``, ``reference_audios`` and
-    would leak as file handles into returned JSON without this step.
-    """
+@contextmanager
+def _open_seedance_file_handles(api_params: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    """Yield Replicate params with Seedance path fields opened as binary files."""
     open_handles: list[Any] = []
+    params = dict(api_params)
 
     try:
-        params = dict(api_params)
-
-        # Open file handles for keys Seedance expects as binary uploads.
         if "image" in params:
             f = open(params["image"], "rb")
             open_handles.append(f)
@@ -450,14 +429,7 @@ def run_seedance_job(
                 open_handles.append(f)
                 opened.append(f)
             params["reference_audios"] = opened
-
-        sidecar = replicate_min.generate(
-            model_ref=model_ref,
-            params=params,
-            out_dir=out_dir,
-            base_name=base_name,
-            timeout_s=timeout_s,
-        )
+        yield params
     finally:
         for handle in open_handles:
             try:
@@ -465,8 +437,77 @@ def run_seedance_job(
             except Exception:
                 pass
 
+
+def run_seedance_job(
+    *,
+    api_params: dict[str, Any],
+    return_params: dict[str, Any],
+    out_dir: Path,
+    base_name: str,
+    timeout_s: int = 600,
+    model_ref: str = SEEDANCE_MODEL_DEFAULT,
+) -> dict[str, Any]:
+    """Open file handles, call ``replicate_min.generate``, sanitize sidecar.
+
+    ``api_params`` carries string paths under ``image``/``last_frame_image``/
+    ``reference_*``; this function opens each as a binary handle, calls the
+    generic Replicate wrapper, then closes every handle in a ``finally`` block.
+
+    The returned sidecar's ``inputs`` and ``resolved_params`` are replaced
+    with ``return_params`` (string paths only). ``replicate_min``'s built-in
+    filter excludes only legacy keys (``image``, ``image_input``,
+    ``input_images``); Seedance handles live under ``last_frame_image``,
+    ``reference_images``, ``reference_videos``, ``reference_audios`` and
+    would leak as file handles into returned JSON without this step.
+    """
+    with _open_seedance_file_handles(api_params) as params:
+        sidecar = replicate_min.generate(
+            model_ref=model_ref,
+            params=params,
+            out_dir=out_dir,
+            base_name=base_name,
+            timeout_s=timeout_s,
+        )
+
     # Sanitize: replace anything that might carry handles with the clean
     # string-path dict the caller passed in.
     sidecar["inputs"] = dict(return_params)
     sidecar["resolved_params"] = dict(return_params)
     return sidecar
+
+
+def create_seedance_prediction(
+    *,
+    api_params: dict[str, Any],
+    model_ref: str = SEEDANCE_MODEL_DEFAULT,
+    webhook_url: Optional[str] = None,
+    webhook_events_filter: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Create a Seedance prediction without waiting for completion."""
+    with _open_seedance_file_handles(api_params) as params:
+        return replicate_min.create_prediction(
+            model_ref=model_ref,
+            params=params,
+            webhook_url=webhook_url,
+            webhook_events_filter=webhook_events_filter,
+        )
+
+
+def get_seedance_prediction(prediction_id: str) -> dict[str, Any]:
+    """Fetch the latest Seedance prediction state."""
+    return replicate_min.get_prediction(prediction_id)
+
+
+def cancel_seedance_prediction(prediction_id: str) -> dict[str, Any]:
+    """Cancel a running Seedance prediction."""
+    return replicate_min.cancel_prediction(prediction_id)
+
+
+def download_prediction_outputs(
+    *,
+    outputs: list[Any],
+    out_dir: Path,
+    base_name: str,
+) -> list[dict[str, Any]]:
+    """Download completed prediction outputs into the job directory."""
+    return replicate_min.write_outputs(outputs, out_dir, base_name)

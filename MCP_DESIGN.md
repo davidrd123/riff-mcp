@@ -1,6 +1,6 @@
 # MCP Layer — Design
 
-**Status:** v1 implemented through Step 8 — v7 design record
+**Status:** v1 implemented through Step 8; v2 Option A local async jobs mock-verified
 **Author:** David Dickinson + Claude
 **Last updated:** 2026-05-09
 
@@ -811,6 +811,11 @@ V2 should be scoped as a set of separable tracks. They do not all need to ship t
 
 Baseline v2 candidate.
 
+Implementation status: initial local async surface is implemented and
+mock-verified (`start_video_job`, `get_video_job`, `cancel_video_job`). It uses
+durable local `request.json` / `status.json` files and non-blocking Replicate
+prediction creation. Live Replicate smoke for this path is still pending.
+
 Add:
 - `start_video_job(...)` - creates the Replicate prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
 - `get_video_job(job_id)` - reads local `status.json` / `job.json`, then optionally polls Replicate by `prediction_id`.
@@ -902,8 +907,8 @@ Cons:
 ### Recommended Sequence
 
 V2.0:
-- Local async jobs: `start_video_job`, `get_video_job`, optional `cancel_video_job`.
-- Durable local job status files.
+- Local async jobs: `start_video_job`, `get_video_job`, optional `cancel_video_job`. Initial implementation is in place; live smoke pending.
+- Durable local job status files. Initial implementation is in place.
 - Blocking `generate_video` preserved as a wrapper.
 - `compare_videos`.
 - JSONL iteration audit.

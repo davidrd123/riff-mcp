@@ -3,13 +3,17 @@
 Tools:
 - generate_image  — Gemini image generation (wraps generate_image_job)
 - generate_video  — Seedance 2.0 via Replicate (uses seedance.py adapter)
+- start_video_job, get_video_job, cancel_video_job
+                  — local async control surface for Seedance predictions
 
 See MCP_DESIGN.md at the repo root for the full architecture.
 """
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -39,6 +43,7 @@ mcp = FastMCP("gemini-prompts-mcp")
 # coded errors at the MCP boundary (e.g. REPLICATE_TIMEOUT from the watchdog)
 # instead of double-wrapping them as REPLICATE_ERROR: REPLICATE_TIMEOUT: ...
 _CODED_PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9_]+:")
+_TERMINAL_PREDICTION_STATUSES = {"succeeded", "failed", "canceled"}
 
 
 def _project_job_dir(job: dict[str, Any]) -> str:
@@ -73,6 +78,236 @@ def _project_video_job_dir(
     model_slug = slugify(model, max_len=80)
     job_hash = seedance.build_seedance_job_hash(params)
     return str(out_root / today / model_slug / f"01_{title_slug}_{job_hash}")
+
+
+def _video_job_dir(
+    *, model: str, title: str, params: dict[str, Any], out_root: Path
+) -> Path:
+    return Path(
+        _project_video_job_dir(
+            model=model,
+            title=title,
+            params=params,
+            out_root=out_root,
+        )
+    )
+
+
+def _jobs_root(out_root: Path) -> Path:
+    return out_root / "jobs"
+
+
+def _job_status_path(out_root: Path, job_id: str) -> Path:
+    return _jobs_root(out_root) / job_id / "status.json"
+
+
+def _job_request_path(out_root: Path, job_id: str) -> Path:
+    return _jobs_root(out_root) / job_id / "request.json"
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_status(out_root: Path, job_id: str, status: dict[str, Any]) -> None:
+    status["updated_at"] = now_iso()
+    write_json(_job_status_path(out_root, job_id), status)
+
+
+def _build_video_context(
+    *,
+    prompt: str,
+    model: str,
+    image: Optional[str],
+    last_frame_image: Optional[str],
+    reference_images: Optional[list[str]],
+    reference_videos: Optional[list[str]],
+    reference_audios: Optional[list[str]],
+    duration: int,
+    resolution: str,
+    aspect_ratio: str,
+    generate_audio: bool,
+    seed: Optional[int],
+    title: Optional[str],
+    out_root: Optional[str],
+) -> dict[str, Any]:
+    api_params = seedance.build_seedance_video_params(
+        prompt=prompt,
+        image=image,
+        last_frame_image=last_frame_image,
+        reference_images=reference_images,
+        reference_videos=reference_videos,
+        reference_audios=reference_audios,
+        duration=duration,
+        resolution=resolution,
+        aspect_ratio=aspect_ratio,
+        generate_audio=generate_audio,
+        seed=seed,
+    )
+    references = seedance.build_references_map(
+        image=image,
+        last_frame_image=last_frame_image,
+        reference_images=reference_images,
+        reference_videos=reference_videos,
+        reference_audios=reference_audios,
+    )
+    mode = seedance.derive_mode(
+        image=image,
+        reference_images=reference_images,
+        reference_videos=reference_videos,
+        reference_audios=reference_audios,
+    )
+    validation_warnings: list[str] = []
+    validation_warnings.extend(seedance.check_prompt_references(prompt, references))
+    validation_warnings.extend(seedance.check_total_reference_cap(references))
+
+    title_str = title if title else prompt_stem(prompt)
+    out_root_path = resolve_output_root(out_root) if out_root else resolve_output_root("out")
+    resolved_params = {
+        "duration": duration,
+        "resolution": resolution,
+        "aspect_ratio": aspect_ratio,
+        "generate_audio": generate_audio,
+        "seed": seed,
+    }
+    job_dir = _video_job_dir(
+        model=model,
+        title=title_str,
+        params=api_params,
+        out_root=out_root_path,
+    )
+    return {
+        "api_params": api_params,
+        "references": references,
+        "mode": mode,
+        "validation_warnings": validation_warnings,
+        "title": title_str,
+        "title_slug": slugify(title_str) or "job-1",
+        "out_root": out_root_path,
+        "resolved_params": resolved_params,
+        "job_dir": job_dir,
+    }
+
+
+def _check_video_files(api_params: dict[str, Any]) -> None:
+    for path_key in ("image", "last_frame_image"):
+        path_val = api_params.get(path_key)
+        if path_val and not Path(path_val).is_file():
+            raise RuntimeError(f"FILE_NOT_FOUND: {path_val}")
+    for path_key in ("reference_images", "reference_videos", "reference_audios"):
+        for path_val in api_params.get(path_key, []) or []:
+            if not Path(path_val).is_file():
+                raise RuntimeError(f"FILE_NOT_FOUND: {path_val}")
+
+
+def _prediction_status(prediction: dict[str, Any]) -> str:
+    return str(prediction.get("status") or "unknown")
+
+
+def _prediction_error(prediction: dict[str, Any]) -> Optional[dict[str, Any]]:
+    error = prediction.get("error")
+    if not error:
+        return None
+    if isinstance(error, dict):
+        return error
+    return {"message": str(error), "type": "ReplicatePredictionError"}
+
+
+def _outputs_from_prediction(prediction: dict[str, Any]) -> list[Any]:
+    output = prediction.get("output") or []
+    if isinstance(output, list):
+        return output
+    return [output]
+
+
+def _prediction_metrics(prediction: dict[str, Any], outputs: list[dict[str, Any]]) -> dict[str, Any]:
+    metrics = dict(prediction.get("metrics") or {})
+    predict_time = metrics.get("predict_time")
+    if predict_time is not None and "predict_time_s" not in metrics:
+        metrics["predict_time_s"] = predict_time
+    metrics["download_time_s"] = (
+        outputs[0].get("_metrics", {}).get("download_time_s") if outputs else None
+    )
+    metrics["cold_start"] = bool((metrics.get("predict_time_s") or 0.0) >= 40.0)
+    return metrics
+
+
+def _result_from_prediction(
+    *,
+    status: dict[str, Any],
+    prediction: dict[str, Any],
+) -> dict[str, Any]:
+    job_dir = Path(status["job_dir"])
+    title_slug = slugify(status["title"]) or "job-1"
+    raw_outputs = _outputs_from_prediction(prediction)
+    outputs = seedance.download_prediction_outputs(
+        outputs=raw_outputs,
+        out_dir=job_dir,
+        base_name=title_slug,
+    )
+    metrics = _prediction_metrics(prediction, outputs)
+
+    enriched_outputs: list[dict[str, Any]] = []
+    for idx, out in enumerate(outputs, start=1):
+        out_clean = dict(out)
+        out_clean.pop("_metrics", None)
+        out_clean["index"] = idx
+        out_clean["media_info"] = seedance.probe_media_info(out_clean["path"])
+        enriched_outputs.append(out_clean)
+
+    return {
+        "status": "ok",
+        "created_at": now_iso(),
+        "started_at": prediction.get("started_at") or status.get("started_at"),
+        "completed_at": prediction.get("completed_at"),
+        "title": status["title"],
+        "model": status["model"],
+        "model_version": prediction.get("version") or "@latest",
+        "prediction_id": status["prediction_id"],
+        "mode": status["mode"],
+        "prompt": status["prompt"],
+        "resolved_params": status["resolved_params"],
+        "references": status["references"],
+        "validation_warnings": status["validation_warnings"],
+        "job_dir": status["job_dir"],
+        "outputs": enriched_outputs,
+        "metrics": metrics,
+    }
+
+
+def _merge_prediction_status(
+    *,
+    status: dict[str, Any],
+    prediction: dict[str, Any],
+    out_root: Path,
+) -> dict[str, Any]:
+    provider_status = _prediction_status(prediction)
+    status["status"] = provider_status
+    status["provider_prediction"] = prediction
+    status["error"] = _prediction_error(prediction)
+    if prediction.get("started_at"):
+        status["started_at"] = prediction["started_at"]
+    if prediction.get("completed_at"):
+        status["completed_at"] = prediction["completed_at"]
+
+    if provider_status == "succeeded" and not status.get("result"):
+        result = _result_from_prediction(status=status, prediction=prediction)
+        write_json(Path(status["job_dir"]) / "job.json", result)
+        status["result"] = result
+        status["outputs_downloaded"] = True
+    elif provider_status in {"failed", "canceled"}:
+        status["outputs_downloaded"] = False
+
+    _write_status(out_root, status["job_id"], status)
+    return status
+
+
+def _load_async_video_status(job_id: str, out_root: Optional[str]) -> tuple[Path, dict[str, Any]]:
+    out_root_path = resolve_output_root(out_root) if out_root else resolve_output_root("out")
+    status_path = _job_status_path(out_root_path, job_id)
+    if not status_path.is_file():
+        raise RuntimeError(f"JOB_NOT_FOUND: {job_id}")
+    return out_root_path, _read_json(status_path)
 
 
 @mcp.tool()
@@ -375,6 +610,166 @@ def generate_video(
     }
     write_json(job_dir / "job.json", result)
     return result
+
+
+@mcp.tool()
+def start_video_job(
+    prompt: str,
+    model: str = SEEDANCE_MODEL_DEFAULT,
+    image: Optional[str] = None,
+    last_frame_image: Optional[str] = None,
+    reference_images: Optional[list[str]] = None,
+    reference_videos: Optional[list[str]] = None,
+    reference_audios: Optional[list[str]] = None,
+    duration: int = 5,
+    resolution: str = "720p",
+    aspect_ratio: str = "16:9",
+    generate_audio: bool = False,
+    seed: Optional[int] = None,
+    title: Optional[str] = None,
+    out_root: Optional[str] = None,
+    webhook_url: Optional[str] = None,
+) -> dict[str, Any]:
+    """Start a Seedance video job and return immediately.
+
+    This is the local-async counterpart to ``generate_video``. It validates
+    inputs, creates a durable local job record under ``<out_root>/jobs/<job_id>``,
+    starts a non-blocking Replicate prediction, and returns the current status.
+    Use ``get_video_job(job_id)`` to poll or collect completed outputs.
+    """
+    ctx = _build_video_context(
+        prompt=prompt,
+        model=model,
+        image=image,
+        last_frame_image=last_frame_image,
+        reference_images=reference_images,
+        reference_videos=reference_videos,
+        reference_audios=reference_audios,
+        duration=duration,
+        resolution=resolution,
+        aspect_ratio=aspect_ratio,
+        generate_audio=generate_audio,
+        seed=seed,
+        title=title,
+        out_root=out_root,
+    )
+    api_params = ctx["api_params"]
+    _check_video_files(api_params)
+
+    job_id = uuid.uuid4().hex[:12]
+    out_root_path: Path = ctx["out_root"]
+    job_dir = ensure_dir(Path(f"{ctx['job_dir']}_{job_id}"))
+    ensure_dir(_jobs_root(out_root_path) / job_id)
+
+    request = {
+        "job_id": job_id,
+        "created_at": now_iso(),
+        "provider": "replicate",
+        "tool": "start_video_job",
+        "model": model,
+        "mode": ctx["mode"],
+        "prompt": prompt.strip(),
+        "resolved_params": ctx["resolved_params"],
+        "provider_params": api_params,
+        "references": ctx["references"],
+        "validation_warnings": ctx["validation_warnings"],
+        "job_dir": str(job_dir),
+    }
+    write_json(_job_request_path(out_root_path, job_id), request)
+
+    prediction = seedance.create_seedance_prediction(
+        api_params=api_params,
+        model_ref=model,
+        webhook_url=webhook_url,
+        webhook_events_filter=["completed"] if webhook_url else None,
+    )
+    prediction_id = prediction.get("id")
+    if not prediction_id:
+        raise RuntimeError("REPLICATE_ERROR: prediction create returned no id")
+
+    status = {
+        "status": _prediction_status(prediction),
+        "job_id": job_id,
+        "prediction_id": prediction_id,
+        "provider": "replicate",
+        "created_at": request["created_at"],
+        "updated_at": request["created_at"],
+        "started_at": prediction.get("started_at"),
+        "completed_at": prediction.get("completed_at"),
+        "title": ctx["title"],
+        "model": model,
+        "mode": ctx["mode"],
+        "prompt": prompt.strip(),
+        "resolved_params": ctx["resolved_params"],
+        "references": ctx["references"],
+        "validation_warnings": ctx["validation_warnings"],
+        "job_dir": str(job_dir),
+        "request_path": str(_job_request_path(out_root_path, job_id)),
+        "status_path": str(_job_status_path(out_root_path, job_id)),
+        "outputs_downloaded": False,
+        "error": _prediction_error(prediction),
+        "provider_prediction": prediction,
+    }
+    _write_status(out_root_path, job_id, status)
+    return status
+
+
+@mcp.tool()
+def get_video_job(
+    job_id: str,
+    out_root: Optional[str] = None,
+    poll: bool = True,
+) -> dict[str, Any]:
+    """Return local status for an async video job, optionally polling Replicate."""
+    out_root_path, status = _load_async_video_status(job_id, out_root)
+    if not poll:
+        return status
+
+    if status.get("status") in _TERMINAL_PREDICTION_STATUSES:
+        if status.get("status") == "succeeded" and not status.get("result"):
+            prediction = status.get("provider_prediction")
+            if not prediction:
+                prediction_id = status.get("prediction_id")
+                if not prediction_id:
+                    raise RuntimeError(f"INVALID_JOB: {job_id} has no prediction_id")
+                prediction = seedance.get_seedance_prediction(prediction_id)
+            return _merge_prediction_status(
+                status=status,
+                prediction=prediction,
+                out_root=out_root_path,
+            )
+        return status
+
+    prediction_id = status.get("prediction_id")
+    if not prediction_id:
+        raise RuntimeError(f"INVALID_JOB: {job_id} has no prediction_id")
+    prediction = seedance.get_seedance_prediction(prediction_id)
+    return _merge_prediction_status(
+        status=status,
+        prediction=prediction,
+        out_root=out_root_path,
+    )
+
+
+@mcp.tool()
+def cancel_video_job(
+    job_id: str,
+    out_root: Optional[str] = None,
+) -> dict[str, Any]:
+    """Cancel a running async video job and persist the updated status."""
+    out_root_path, status = _load_async_video_status(job_id, out_root)
+    if status.get("status") in _TERMINAL_PREDICTION_STATUSES:
+        return status
+
+    prediction_id = status.get("prediction_id")
+    if not prediction_id:
+        raise RuntimeError(f"INVALID_JOB: {job_id} has no prediction_id")
+    prediction = seedance.cancel_seedance_prediction(prediction_id)
+    return _merge_prediction_status(
+        status=status,
+        prediction=prediction,
+        out_root=out_root_path,
+    )
 
 
 def main() -> None:

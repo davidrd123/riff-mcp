@@ -15,7 +15,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Iterable, Optional, Union
+from typing import Any, Iterable, Union
 
 
 Timestamp = Union[float, int, str]

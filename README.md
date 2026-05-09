@@ -92,6 +92,14 @@ Run the generation server on stdio:
 uv run gemini-prompts-mcp
 ```
 
+Generation tools:
+
+- `generate_image` — blocking Gemini image generation.
+- `generate_video` — blocking Replicate-Seedance generation, preserved for simple one-shot calls.
+- `start_video_job` — starts a Replicate-Seedance prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
+- `get_video_job` — reads `<out_root>/jobs/<job_id>/status.json`, optionally polls Replicate, and downloads outputs when the prediction succeeds.
+- `cancel_video_job` — cancels a running provider prediction and updates local status.
+
 Run the media-analysis server on stdio:
 
 ```bash
@@ -307,6 +315,9 @@ uv run gemini-video-prompts prompts/example_batch.yaml --out-root /tmp/gemini-vi
   and polled until complete in the standalone CLI.
 - MCP `generate_video` uses Replicate-Seedance, requires `REPLICATE_API_TOKEN`,
   and blocks until the prediction completes or times out.
+- MCP async video jobs write durable status files under `<out_root>/jobs/`.
+  The generated media still lands under the normal dated output layout, with
+  the async `job_id` appended to avoid collisions between identical prompts.
 - Image generation uses the standard `generate_content(...)` flow: text (and
   optional input images) go in, inline image parts come out and are saved as
   PNGs.

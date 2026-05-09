@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -63,13 +64,22 @@ def _ensure_replicate() -> None:
 
 
 def _get_url(item: Any) -> Optional[str]:
-    if hasattr(item, "url") and callable(getattr(item, "url")):
-        try:
-            return item.url()
-        except Exception:
-            return None
+    if hasattr(item, "url"):
+        url_attr = getattr(item, "url")
+        if callable(url_attr):
+            try:
+                return url_attr()
+            except Exception:
+                return None
+        if isinstance(url_attr, str):
+            return url_attr
     if isinstance(item, str):
         return item
+    if isinstance(item, dict):
+        for key in ("url", "uri"):
+            value = item.get(key)
+            if isinstance(value, str):
+                return value
     return None
 
 
@@ -78,6 +88,17 @@ def _read_bytes(item: Any) -> bytes:
         return item.read()
     if isinstance(item, (bytes, bytearray)):
         return bytes(item)
+    if isinstance(item, str):
+        if item.startswith(("http://", "https://")):
+            with urllib.request.urlopen(item, timeout=120) as response:
+                return response.read()
+        path = Path(item).expanduser()
+        if path.is_file():
+            return path.read_bytes()
+    if isinstance(item, dict):
+        url = _get_url(item)
+        if url:
+            return _read_bytes(url)
     raise TypeError("Unsupported output item type; expected file-like with read() or bytes")
 
 
@@ -122,6 +143,77 @@ def _write_outputs(items: Iterable[Any], out_dir: Path, base_name: str) -> List[
         outputs[0].setdefault("_metrics", {})
         outputs[0]["_metrics"]["download_time_s"] = dl_time
     return outputs
+
+
+def write_outputs(items: Iterable[Any], out_dir: Path, base_name: str) -> List[dict]:
+    """Download/write provider output items to disk.
+
+    The async prediction path usually receives plain output URLs from
+    ``predictions.get`` rather than FileOutput objects from ``replicate.run``.
+    """
+    return _write_outputs(items, out_dir, base_name)
+
+
+def _prediction_to_dict(prediction: Any) -> dict[str, Any]:
+    if hasattr(prediction, "model_dump"):
+        return prediction.model_dump()
+    if hasattr(prediction, "dict"):
+        return prediction.dict()
+    return dict(prediction)
+
+
+def _prediction_create_kwargs(
+    *,
+    webhook_url: Optional[str],
+    webhook_events_filter: Optional[list[str]],
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {}
+    if webhook_url:
+        kwargs["webhook"] = webhook_url
+        kwargs["webhook_events_filter"] = webhook_events_filter or ["completed"]
+    return kwargs
+
+
+def create_prediction(
+    *,
+    model_ref: str,
+    params: dict,
+    webhook_url: Optional[str] = None,
+    webhook_events_filter: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    """Create a Replicate prediction without waiting for completion."""
+    _ensure_replicate()
+    kwargs = _prediction_create_kwargs(
+        webhook_url=webhook_url,
+        webhook_events_filter=webhook_events_filter,
+    )
+    if ":" in model_ref:
+        prediction = replicate.predictions.create(
+            version=model_ref.split(":", 1)[1],
+            input=params,
+            wait=False,
+            **kwargs,
+        )
+    else:
+        prediction = replicate.predictions.create(
+            model=model_ref,
+            input=params,
+            wait=False,
+            **kwargs,
+        )
+    return _prediction_to_dict(prediction)
+
+
+def get_prediction(prediction_id: str) -> dict[str, Any]:
+    """Fetch the latest Replicate prediction state."""
+    _ensure_replicate()
+    return _prediction_to_dict(replicate.predictions.get(prediction_id))
+
+
+def cancel_prediction(prediction_id: str) -> dict[str, Any]:
+    """Cancel a running Replicate prediction."""
+    _ensure_replicate()
+    return _prediction_to_dict(replicate.predictions.cancel(prediction_id))
 
 
 def _run_with_timeout(model_ref: str, params: dict, *, timeout_s: int) -> Any:

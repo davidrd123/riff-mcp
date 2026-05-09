@@ -122,3 +122,282 @@ def test_generate_video_writes_job_json_and_cold_start(
     saved = json.loads(job_json.read_text(encoding="utf-8"))
     assert saved["status"] == "ok"
     assert saved["metrics"]["cold_start"] is True
+
+
+def test_start_video_job_writes_local_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    def fake_create_seedance_prediction(**kwargs):
+        assert kwargs["webhook_url"] is None
+        return {
+            "id": "pred-starting",
+            "status": "starting",
+            "version": "@latest",
+            "created_at": "2026-05-09T10:00:00Z",
+            "started_at": None,
+            "completed_at": None,
+            "output": None,
+            "metrics": None,
+            "error": None,
+        }
+
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        fake_create_seedance_prediction,
+    )
+
+    result = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(tmp_path / "out"),
+    )
+
+    assert result["status"] == "starting"
+    assert result["prediction_id"] == "pred-starting"
+    assert result["outputs_downloaded"] is False
+    assert Path(result["status_path"]).is_file()
+    assert Path(result["request_path"]).is_file()
+
+    saved = json.loads(Path(result["status_path"]).read_text(encoding="utf-8"))
+    assert saved["job_id"] == result["job_id"]
+    assert saved["prediction_id"] == "pred-starting"
+
+
+def test_start_video_job_uses_unique_job_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    prediction_ids = iter(["pred-one", "pred-two"])
+
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        lambda **kwargs: {
+            "id": next(prediction_ids),
+            "status": "starting",
+            "version": "@latest",
+            "created_at": "2026-05-09T10:00:00Z",
+            "started_at": None,
+            "completed_at": None,
+            "output": None,
+            "metrics": None,
+            "error": None,
+        },
+    )
+
+    first = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(tmp_path / "out"),
+    )
+    second = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(tmp_path / "out"),
+    )
+
+    assert first["job_id"] != second["job_id"]
+    assert first["job_dir"] != second["job_dir"]
+    assert first["job_dir"].endswith(first["job_id"])
+    assert second["job_dir"].endswith(second["job_id"])
+
+
+def test_get_video_job_finalizes_succeeded_prediction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        lambda **kwargs: {
+            "id": "pred-done",
+            "status": "processing",
+            "version": "@latest",
+            "created_at": "2026-05-09T10:00:00Z",
+            "started_at": "2026-05-09T10:00:01Z",
+            "completed_at": None,
+            "output": None,
+            "metrics": None,
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "get_seedance_prediction",
+        lambda prediction_id: {
+            "id": prediction_id,
+            "status": "succeeded",
+            "version": "@latest",
+            "created_at": "2026-05-09T10:00:00Z",
+            "started_at": "2026-05-09T10:00:01Z",
+            "completed_at": "2026-05-09T10:00:30Z",
+            "output": ["https://example.com/fake.mp4"],
+            "metrics": {"predict_time": 1.5},
+            "error": None,
+        },
+    )
+
+    def fake_download_prediction_outputs(**kwargs):
+        output_path = kwargs["out_dir"] / "fake_00.mp4"
+        output_path.write_bytes(b"fake video")
+        return [
+            {
+                "path": str(output_path),
+                "url": kwargs["outputs"][0],
+                "bytes": output_path.stat().st_size,
+                "_metrics": {"download_time_s": 0.2},
+            }
+        ]
+
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "download_prediction_outputs",
+        fake_download_prediction_outputs,
+    )
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "probe_media_info",
+        lambda path: {
+            "duration_s": None,
+            "fps": None,
+            "width": None,
+            "height": None,
+            "has_audio": None,
+        },
+    )
+
+    started = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(tmp_path / "out"),
+    )
+    result = gen_server.get_video_job(
+        started["job_id"],
+        out_root=str(tmp_path / "out"),
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["outputs_downloaded"] is True
+    assert result["result"]["status"] == "ok"
+    assert result["result"]["outputs"][0]["path"].endswith(".mp4")
+    assert result["result"]["metrics"]["predict_time_s"] == 1.5
+
+    job_json = Path(result["job_dir"]) / "job.json"
+    assert job_json.is_file()
+    saved_job = json.loads(job_json.read_text(encoding="utf-8"))
+    assert saved_job["prediction_id"] == "pred-done"
+
+
+def test_get_video_job_finalizes_terminal_status_without_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        lambda **kwargs: {
+            "id": "pred-terminal",
+            "status": "succeeded",
+            "version": "@latest",
+            "created_at": "2026-05-09T10:00:00Z",
+            "started_at": "2026-05-09T10:00:01Z",
+            "completed_at": "2026-05-09T10:00:30Z",
+            "output": ["https://example.com/fake.mp4"],
+            "metrics": {"predict_time": 1.0},
+            "error": None,
+        },
+    )
+
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "download_prediction_outputs",
+        lambda **kwargs: [
+            {
+                "path": str(kwargs["out_dir"] / "fake_00.mp4"),
+                "url": kwargs["outputs"][0],
+                "bytes": 10,
+                "_metrics": {"download_time_s": 0.1},
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "probe_media_info",
+        lambda path: {
+            "duration_s": None,
+            "fps": None,
+            "width": None,
+            "height": None,
+            "has_audio": None,
+        },
+    )
+
+    started = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(tmp_path / "out"),
+    )
+    saved_status = json.loads(Path(started["status_path"]).read_text(encoding="utf-8"))
+    saved_status.pop("result", None)
+    saved_status["outputs_downloaded"] = False
+    Path(started["status_path"]).write_text(
+        json.dumps(saved_status, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    result = gen_server.get_video_job(
+        started["job_id"],
+        out_root=str(tmp_path / "out"),
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["outputs_downloaded"] is True
+    assert result["result"]["prediction_id"] == "pred-terminal"
+
+
+def test_cancel_video_job_updates_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        lambda **kwargs: {
+            "id": "pred-cancel",
+            "status": "processing",
+            "version": "@latest",
+            "created_at": "2026-05-09T10:00:00Z",
+            "started_at": "2026-05-09T10:00:01Z",
+            "completed_at": None,
+            "output": None,
+            "metrics": None,
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "cancel_seedance_prediction",
+        lambda prediction_id: {
+            "id": prediction_id,
+            "status": "canceled",
+            "version": "@latest",
+            "created_at": "2026-05-09T10:00:00Z",
+            "started_at": "2026-05-09T10:00:01Z",
+            "completed_at": "2026-05-09T10:00:03Z",
+            "output": None,
+            "metrics": None,
+            "error": None,
+        },
+    )
+
+    started = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(tmp_path / "out"),
+    )
+    result = gen_server.cancel_video_job(
+        started["job_id"],
+        out_root=str(tmp_path / "out"),
+    )
+
+    assert result["status"] == "canceled"
+    assert result["outputs_downloaded"] is False
+    saved = json.loads(Path(result["status_path"]).read_text(encoding="utf-8"))
+    assert saved["status"] == "canceled"
