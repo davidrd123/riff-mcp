@@ -2,7 +2,7 @@
 
 What we learned by running the tools end-to-end during the v1 build. Everything here is grounded in actual API calls against real artifacts; nothing is hypothetical. The code itself, design doc, and git log capture *what we built*; this captures *how it behaves in practice* and *where the rough edges are*.
 
-Updated 2026-05-08. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the same day; v2 #5 (local async API) implemented + mock-verified + live-smoked; v2 #2 (`.mcp.example.json` + `riff-mcp-doctor`) wired the surface for agent use.
+Updated 2026-05-08. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the same day; v2 #5 (local async API) implemented + mock-verified + live-smoked; v2 #2 (`.mcp.example.json` + `riff-mcp-doctor`) wired the surface for agent use; project `.mcp.json` wired in this repo and exercised end-to-end against vault-grounded inputs from the sibling GML 2026 Closing Film vault — surfaced the **input-sensitivity finding** that `intent` text is the load-bearing variable for `score_image` (same image / same prompt, ~65pt swing on `creative_brief_fidelity` based purely on intent composition). Also live-fired the full mutation→describe→score riff loop end-to-end through MCP for the first time. **What is NOT yet validated**: whether the scores Gemini returns track production judgment. That requires a human-in-the-loop calibration pass (see v2 outstanding #13). See "Vault-grounded input-sensitivity characterization" section.
 
 ---
 
@@ -54,6 +54,7 @@ Updated 2026-05-08. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the
 - **`style_lock` calibration anchor working as designed**. On the bridge video, Gemini scored `style_lock = 80` — recognizing that the 2.5D-collage aesthetic survived the cut even though the cut wrecked everything else. A miscalibrated model would have dragged style_lock down with the rest.
 - **`decision_hint`** consistently lined up with the dimension scores in our tests: `direction_gate` for v13, `reroll` for the bridge cut.
 - **`SCHEMA_MISMATCH` post-parse validation** verified via 5 mock cases (commit `c0bb88d`): catches missing dims, bogus dims, duplicates; passes correct responses and custom-criteria responses.
+- **`intent` is the load-bearing variable** (2026-05-08 vault-grounded run) — re-running on the v13 PNG with vault-grounded scene-04-V3-direction `intent` (vs the earlier improvised intent that referenced the overarching candy-coated brief) flipped `creative_brief_fidelity` from **30** to **95** and `decision_hint` from `direction_gate` to `accept`. Same image, same prompt, same dimensions. The score is a function of (image, intent), not image alone. See "Vault-grounded input-sensitivity characterization" section below for the full table and production implication.
 
 ### `describe_video` (Step 6) at fps=12
 
@@ -86,6 +87,7 @@ Updated 2026-05-08. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the
 - **"Fisheye lens distortion" in `spatial_grammar`** caught the CRT vignette I noticed visually as a structural property.
 - **Flash is sufficient** for this tool. Pro would be overkill.
 - Latency: ~10–15s on Flash.
+- **`intent` is the steering wheel** (2026-05-08 vault-grounded run) — no-intent runs surface "interesting observations" tokens (`satirical consumerism`, `limited digital palette`); vault-grounded `intent` shifts output to brief-aligned vocabulary (`searing cyan highlights`, `chunky 16-bit pixels, ordered dithering, hard black outlines`, `frictionless digital world` — last one pulled from the vault's `scene-key-beats.md` Takeaway 2 narrative description). The `intent` arg shifts the model from "what's interesting about this image" to "what brief-aligned vocabulary is in this image." See "Vault-grounded input-sensitivity characterization" section.
 
 ### `start_video_job` / `get_video_job` / `cancel_video_job` (v2 #5, async API)
 
@@ -111,6 +113,71 @@ Updated 2026-05-08. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the
 - **Frame-accurate seek working** via `-ss` after `-i`. On the bridge video at timestamps `[3.5, 4.0, 4.083, 4.167, 4.5]`, all 5 PNGs land in `<video_dir>/frames/` with 3-decimal timestamp precision in the filenames.
 - **Visual confirmation matches Gemini's `describe_video` analysis** of the same clip: at t=3.5 (pre-cut) the right side has dark buildings and a yellow circular sign; at t=4.5 (post-cut) the right side is completely different (lighter buildings, "FOOT 33" / partial coffee-shop text). The cut Gemini localized between t=4.083 and t=4.167 is visually obvious between the bracketing frames.
 - ffmpeg 8.0.1 on Mac via Homebrew. No portability surprises.
+
+---
+
+## Vault-grounded input-sensitivity characterization (2026-05-08)
+
+> **Honest framing.** This section documents how the tools *respond* to vault-grounded inputs — not whether their outputs are *right*. What follows is *infrastructure validated* and *input-output behavior characterized*; what follows is **not** ground-truthed against production judgment. The original section header read "calibration"; that overclaimed. True calibration requires comparing tool scores to scores assigned by a production reviewer (Patrick, or equivalent) blind to the tool's output. Until that pass happens (see v2 outstanding #13), every "Gemini scored X" finding here is internally coherent but circular — Gemini measured against itself, with the rubric Gemini applies determined by the `intent` text the caller composes. Treat the findings as *characterization of the surface area*, not *proof of fitness*.
+
+First end-to-end exercise of the wired MCP servers, run against real production artifacts from the sibling GML 2026 Closing Film vault (`~/Projects/Lora/ComfyPromptByAPI-patrick/WorkingSpace/patrick/vault_gml/`). The vault's evaluation rubric — six dimensions, named: `prompt_fidelity`, `preservation_fidelity`, `style_lock`, `scene_hierarchy`, `story_service`, `creative_brief_fidelity` — is the same rubric `score_image`/`score_video` default to. So the *rubric is shared by design* with the production team. Whether the tool's *scores within that rubric* match the production team's *scores within that rubric* is the open question; the rubric itself is not.
+
+**Methodology.** Pulled brief text and prompt verbatim from the vault → drove `score_image`, `describe_image`, `extract_visual_tokens`, and `generate_image` (mutation) on the v13 PNG and one mutation iteration → compared input/output behavior across runs that varied only in their `intent` and `base_plate_path` arguments. No human ground-truth scoring has been collected.
+
+### Headline: `intent` is the load-bearing variable for `score_image`
+
+Same image, same prompt, same six dimensions — only the `intent` text changed:
+
+| Dimension | Earlier eval (improvised intent referencing overarching brief) | 2026-05-08 (vault-grounded scene-04 V3 intent) |
+|-----------|---------------------------------------------------------------|------------------------------------------------|
+| prompt_fidelity | (not surfaced) | **95** |
+| style_lock | 80 | **95** |
+| scene_hierarchy | (not surfaced) | **90** |
+| story_service | (not surfaced) | **90** |
+| **creative_brief_fidelity** | **30** | **95** |
+| decision_hint | `direction_gate` | **`accept`** |
+
+Both diagnoses are internally coherent — they're scoring against different briefs. Earlier: *"prompt requested 'blue/cyan palette' which directly contradicts the brief's requirement for a 'high-key sunny commercial-Americana' look."* 2026-05-08: *"successfully translates the structural requirements of the Scene 04 style anchor into the updated blue/cyan sunny daytime palette required by the current direction."* The image hasn't changed; the score is a function of `(image, intent)`, not `image` alone.
+
+**Production implication — multi-layered briefs.** The vault has multi-layered briefs: overarching aesthetic in `look-overarching.md` (V2 — candy-coated luxury, pinks/mints/golds) plus a scene-specific override in `look-scene-04-search-shopping.md` (V3 — blue/cyan-dominant, sunny Bay Area daytime, pixel art). The current single-string `intent` parameter has no structure to express *"primary criterion: scene direction; secondary check: overarching, flag conflicts."* Whichever layer the calling agent puts in `intent` is the brief Gemini scores against — invisibly. Today's vault-grounded `intent` (scene-04 V3 specific) hides the overarching-vs-scene conflict that the earlier improvised intent surfaced. Both are "right" given their respective inputs; neither is sufficient for production. Intent composition is now a first-class production decision, not a free-text afterthought. See v2 outstanding item #11.
+
+### `extract_visual_tokens` — `intent` shifts what the model surfaces
+
+Side-by-side on the v13 PNG, default 5 categories on Flash, identical except `intent`:
+
+| Category | No-intent | Vault-grounded `intent` (scene-04 V3 vocabulary) |
+|----------|-----------|--------------------------------------------------|
+| lighting | flat digital light, uniform glow, no cast shadows, screen-emitted light | **searing cyan highlights**, **deep flat shadows**, hard-edged sunlight, uniform global illumination, no soft falloff |
+| atmosphere | retro digital, pixel art aesthetic, **satirical consumerism**, surreal commercial, arcade game vibe | **hyper-saturated commercial**, **16-bit arcade**, busy retail chaos, **frictionless digital world**, sunny daytime |
+| palette | monochromatic blue base, electric cyan, neon pink accents, vibrant primary pops, limited digital palette | **electric blue dominant**, **cyan midtones**, magenta accents, neon pink highlights, saturated primary yellow |
+| materials | pixelated textures, aliased edges, flat color blocks, digital dithered gradients | **chunky 16-bit pixels**, **ordered dithering**, **hard black outlines**, **CRT scan lines**, aliased edges |
+| spatial_grammar | high-angle wide shot, symmetrical composition, central focal point, isometric perspective, repetitive grid layout | **isometric 3/4 view**, **grid-aligned sprites**, **flat horizontal plane**, repeating car assets, centered focal machine |
+
+**Bold = matches vault vocabulary verbatim or near-verbatim** (e.g. `"searing cyan highlights"` and `"deep flat shadows"` are taken straight from the V3 system instruction; `"frictionless digital world"` comes from the Takeaway 2 narrative description in `scene-key-beats.md`). The intent run is dramatically more aligned with the production team's codified style language — without intent, Flash gives you "what's interesting about this image"; with intent, it gives you "brief-aligned vocabulary you can paste into the next genesis prompt."
+
+This is the strongest single argument for the `intent` parameter design within the *characterization* frame — without `intent`, Flash gives you "what's interesting about this image"; with `intent`, it gives you brief-aligned vocabulary. Whether that brief-aligned vocabulary is *production-usable* is a Patrick judgment call, not provable from this run alone.
+
+### Iteration mock — full riff loop end-to-end (mutation path)
+
+Exercised the canonical generate→describe→score loop end-to-end through MCP for the first time. Mutation: pass v13 PNG as `image:` ref, prompt for the addition of the AI Sean pixel-art figures the v13 prompt deliberately omitted (per the 2026-04-16 vault note: figures were to be added separately, not in the wide establishing shot).
+
+**Infrastructure exercised for the first time through MCP:**
+- `generate_image` live (not dry_run), with `image:` ref → 22s, ~$0.05, 1376×768 output
+- `describe_image` with `base_plate_path` set → Gemini returned an explicit "what changed vs base plate" read
+- `score_image` with `base_plate_path` set → `preservation_fidelity` returned a non-null score (98) for the first time through MCP; previously null on v13 since v13 was a genesis with no base plate
+
+**Tool-output behavior observed (NOT validated against ground truth):**
+- Mutation result: 8 figures added (vs ~6 requested in the prompt). Gemini counted them — my own visual quick-read of the thumbnail said "fewer than 6"; Gemini's count is more reliable for this kind of pixel-figure inventory than my eyeballs at thumbnail scale.
+- `describe_image` surfaced specific real artifacts: hands of cart-pushers don't perfectly align with cart handles; figure at machine slightly overlaps the conveyor belt. Whether these are production-acceptable artifacts or revision-triggers is a Patrick call.
+- `score_image` returned: prompt_fidelity=95, preservation_fidelity=98, style_lock=95, scene_hierarchy=90, story_service=95, creative_brief_fidelity=85, decision_hint=`accept`. The lone partial-credit was on `creative_brief_fidelity` with the diagnosis *"sparse compared to brief's call for an 'army' in such a massive parking lot"* — Gemini independently caught a tension between *prompt language* ("approximately six", "small swarm") and *brief language* ("army of identical figures") that the caller had encoded without noticing. Whether 85 is the right number for that tension, or whether 60 / 95 / something else would better track production judgment, is unverified.
+
+**What this round did *not* exercise.** No `compare_images` call (the documented v1 caveat about cross-image detail attribution still applies; the recommended two-pass workflow per v2 outstanding #4 remains untested). No fresh `generate_image` genesis through MCP (only the mutation was fired). No video tools.
+
+### Test-condition notes
+
+**Caller-side string hygiene.** Multiple tool calls in this session had stray closing tags (`</intent>`, `</system_prompt>`) and even a malformed `<parameter name="title">` block leaked into string parameter values — a Claude scaffolding bug, not a server one (wrong namespace on closing tags). The MCP boundary doesn't lint string params; the malformed text passed through verbatim to Gemini, which was robust to it (treated as noise, scored coherently). One real downstream cost was observed: in the iteration-mock generation, the malformed `<parameter name="title">` block meant the `title` arg was never applied; the job dir was auto-named from the prompt instead of carrying the intended `sc04-v13mut-add-ai-sean-figures` searchable identifier. **Production implication:** when an agent drives MCP tools that feed strings to LLMs, half the caller-side bugs fail-quietly (model copes) and half fail-loudly (param drops). The MCP server can't and shouldn't catch this — strings are arbitrary user data — but production callers need their own input validation pass.
+
+**Asymmetric failure modes.** Caller-side bugs against AI models tend to fail-quietly (model just copes); caller-side bugs against APIs (like dropping a `title` arg) fail-loudly. The MCP layer here is pure-API, so half the bugs got dropped and half passed through. Worth knowing for production: the model-side leg of the call gives almost no validation signal back to the caller about input quality.
 
 ---
 
@@ -199,6 +266,9 @@ Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient 
 8. **Schema-conformance live lane** — small `pytest -m live` fixture that runs the cheapest possible call against each adapter (Seedance 4s @480p, Gemini one-image describe, etc.) and asserts response shapes match our types. ~$0.30–0.40/full run; runnable on demand. Justified by the two schema-drift catches in v2 #1 and v2 #5 — without it, drift accumulates silently between SDK upgrades.
 9. **Pytest as a dev dep** — currently `uv run pytest` requires `--with pytest` since pytest isn't in `[dependency-groups] dev`. Small papercut, easy fix when convenient.
 10. **`compare_videos`** (codex follow-on) — same shape as `compare_images` but for clips. Natural after v2 #4 (`compare_images` mitigation) lands so both share the two-pass pattern.
+11. **Intent composition for multi-layered briefs** (surfaced 2026-05-08 vault-grounded run) — the single-string `intent` parameter on `score_image` / `score_video` / `extract_visual_tokens` is the load-bearing variable for the score (see "Vault-grounded calibration" section). For projects with multi-layered briefs (overarching + scene-specific override), today's API forces the calling agent to choose one layer to put in `intent`, hiding any conflict with the other. A structured intent shape — e.g., `intent: {primary: "...", overarching: "...", flag_conflicts: bool}` — would let the caller express *"score against this direction but tell me if it conflicts with the broader brief."* Lower-cost alternative: a separate `overarching_intent` arg that adds a second creative-brief check dimension to the response. Either approach makes the conflict visible in the tool output instead of silenced by the caller's choice.
+12. **MCP wire smoke as permanent fixture** — the inline JSON-RPC smoke run on 2026-05-08 (spawn each server, `initialize` + `tools/list`, assert all 12 tools present with valid schemas) caught zero issues but is precisely the kind of check that catches "tool silently fails to register due to bad type annotation" — invisible to running tests, only surfaces at agent call time. Worth lifting into a small `tests/test_mcp_smoke.py` so it runs in the suite, not just from a heredoc.
+13. **Human-in-the-loop calibration with Patrick** (the only thing in this list that turns input-sensitivity findings into actual validation) — pick ~5 production outputs Patrick has already reviewed, run `score_image` on each with vault-grounded `intent` (scene-specific direction), ask him to spot-rate each on the same six dimensions blind to the tool's output, then compare per-dimension. Compute: numerical agreement (within ±10? ±20?), rank-order agreement (does the tool agree with Patrick on which output is best?), and `decision_hint` agreement (does `accept`/`direction_gate`/`reroll` match Patrick's verdict?). Cost: ~30 min of Patrick's time + ~$0.50 in API calls. Without this pass, every "Gemini scored X" finding above is internally coherent but circular. The `decision_hint` field is the most likely to drift (already flagged in #6); this is the concrete experiment that would show whether it has. Outputs: a small `calibration-results-YYYY-MM-DD.md` showing where the tool agrees/disagrees with production judgment and what the systematic biases are.
 
 ---
 
@@ -216,8 +286,12 @@ Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient 
 - Async smoke output: `out/async-smoke/2026-05-08/bytedanceseedance-20/01_async-smoke-4s_0ed8e9ad_de2f644b0f97/async-smoke-4s_00.mp4`
 - Async job records: `out/async-smoke/jobs/de2f644b0f97/{request.json, status.json}`
 - MCP wiring template: `.mcp.example.json` (repo root)
+- Project MCP config (gitignored, local): `.mcp.json` (repo root)
 - Doctor source: `src/riff_mcp_doctor/doctor.py`
 - Doctor tests: `tests/test_doctor.py`
+- GML 2026 Closing Film vault (sibling project, source of vault-grounded calibration inputs): `~/Projects/Lora/ComfyPromptByAPI-patrick/WorkingSpace/patrick/vault_gml/`
+- v13 prompt entry (vault): `vault_gml/visual/scene-04/prompts-scene-04-search-shopping.md` (look for `### v13`)
+- v13 brief sources (vault): `vault_gml/visual/look-overarching.md` (overarching V2) + `vault_gml/visual/scene-04/look-scene-04-search-shopping.md` (scene 04 V3 — what the v13 prompt actually followed) + `vault_gml/story/scene-key-beats.md` (Takeaway 2 narrative subtext)
 
 ## Recent commits (this session)
 
