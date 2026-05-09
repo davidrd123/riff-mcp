@@ -1,19 +1,24 @@
 """Gemini multimodal call dispatch for media-analysis-mcp.
 
-Image-loading helpers, client init, and the structured-output call wrapper.
-Video upload+poll lands in a future commit (Step 6 — describe_video /
-score_video).
+Image-loading helpers, client init, the structured-output call wrapper, and
+video upload+poll for the Files API.
 
 Error codes raised here:
 - GOOGLE_GENAI_NOT_INSTALLED — google-genai missing from venv
 - PILLOW_NOT_INSTALLED — Pillow missing from venv
 - API_KEY_MISSING — GEMINI_API_KEY env var not set
 - IMAGE_NOT_FOUND — image path doesn't exist
+- VIDEO_NOT_FOUND — video path doesn't exist
+- VIDEO_UPLOAD_FAILED — Files API upload failed
+- VIDEO_PROCESSING_TIMEOUT — file did not become ACTIVE within timeout
+- VIDEO_PROCESSING_FAILED — file ended in FAILED state
 - NO_RESPONSE — Gemini returned no parseable response
 """
 from __future__ import annotations
 
+import mimetypes
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -74,6 +79,86 @@ def load_image(path: str, *, image_module: Any) -> Any:
         raise RuntimeError(f"IMAGE_NOT_FOUND: {p}")
     img = image_module.open(p)
     return img.convert("RGB")
+
+
+def upload_and_poll_video(
+    client: Any,
+    path: str,
+    *,
+    timeout_s: int = 300,
+    poll_interval_s: float = 2.0,
+) -> Any:
+    """Upload a video to Gemini's Files API and poll until ``state == 'ACTIVE'``.
+
+    Returns the file object (with ``.uri`` and ``.mime_type``) ready to be
+    passed in a ``contents`` list as ``gtypes.FileData``. Caller is responsible
+    for ``cleanup_uploaded(client, file)`` in a ``finally`` block — uploaded
+    files persist on Gemini's side for ~48h otherwise.
+
+    Pattern lifted from DMPOST31's ``nano_analyze_media`` helper.
+    """
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise RuntimeError(f"VIDEO_NOT_FOUND: {p}")
+
+    try:
+        uploaded = client.files.upload(file=str(p))
+    except Exception as exc:
+        raise RuntimeError(f"VIDEO_UPLOAD_FAILED: {exc}") from exc
+
+    deadline = time.perf_counter() + timeout_s
+    while True:
+        # Refresh the file status.
+        try:
+            current = client.files.get(name=uploaded.name)
+        except Exception:
+            current = uploaded
+
+        state_obj = getattr(current, "state", None)
+        # ``state`` may be an enum or a string depending on SDK version.
+        state_str = (
+            getattr(state_obj, "name", None)
+            or (state_obj.value if hasattr(state_obj, "value") else str(state_obj))
+            or ""
+        )
+        state_str = state_str.upper().split(".")[-1]
+
+        if state_str == "ACTIVE":
+            return current
+        if state_str == "FAILED":
+            raise RuntimeError(
+                f"VIDEO_PROCESSING_FAILED: file {uploaded.name} ended in FAILED state"
+            )
+        if time.perf_counter() > deadline:
+            # Best-effort cleanup before raising.
+            try:
+                client.files.delete(name=uploaded.name)
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"VIDEO_PROCESSING_TIMEOUT: file {uploaded.name} did not reach "
+                f"ACTIVE state within {timeout_s}s (last state: {state_str!r})"
+            )
+        time.sleep(poll_interval_s)
+
+
+def cleanup_uploaded(client: Any, file_obj: Any) -> None:
+    """Delete a previously-uploaded Files API resource. Best-effort — never
+    raises. Always pair an ``upload_and_poll_video`` with a ``cleanup_uploaded``
+    in ``finally``."""
+    try:
+        client.files.delete(name=file_obj.name)
+    except Exception:
+        pass
+
+
+def video_mime_type(path: str) -> str:
+    """Best-effort mime-type guess for a video file. Falls back to
+    ``video/mp4`` when ``mimetypes`` can't determine it."""
+    mt, _ = mimetypes.guess_type(path)
+    if mt and mt.startswith("video/"):
+        return mt
+    return "video/mp4"
 
 
 def call_structured(

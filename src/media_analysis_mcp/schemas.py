@@ -63,6 +63,76 @@ class ImageDescriptionResult(BaseModel):
     )
 
 
+# ---------- describe_video ----------
+
+
+class VideoObservations(BaseModel):
+    """Twelve fixed observation categories — eight base (shared with image)
+    plus four video-specific. Each field is rich prose (1–3 sentences)."""
+
+    composition: str = Field(
+        ..., description="Framing, layout, scale relationships, hero placement"
+    )
+    subject_elements: str = Field(
+        ..., description="What objects/figures are present and their actions"
+    )
+    color_and_palette: str = Field(
+        ..., description="Dominant colors, accents, color relationships"
+    )
+    style_and_rendering: str = Field(
+        ..., description="Medium, fidelity, technique signals"
+    )
+    lighting_and_atmosphere: str = Field(
+        ..., description="Light direction, time of day, mood"
+    )
+    text_and_signage: str = Field(
+        ..., description="Visible writing, branding, UI elements, or 'none'"
+    )
+    notable_or_unexpected: str = Field(
+        ..., description="Anything surprising, distinctive, or off-brief"
+    )
+    artifacts_or_failures: str = Field(
+        ...,
+        description="Visible AI errors, anatomy issues, compositing seams, "
+        "or 'none observed'",
+    )
+    # Video-specific:
+    motion_and_camera: str = Field(
+        ...,
+        description="Camera movement (pan, push, orbit, static), subject "
+        "motion, motion quality (smooth, judder, morph)",
+    )
+    pacing_and_timing: str = Field(
+        ...,
+        description="Beat rhythm, action timing, when key moments hit, "
+        "perceived shot length",
+    )
+    frame_continuity: str = Field(
+        ...,
+        description="How well subject identity / style / lighting hold "
+        "across frames; flicker, drift, morph artifacts",
+    )
+    audio_quality: str = Field(
+        ...,
+        description="Audio character if present (dialogue intelligibility, "
+        "music, SFX, sync to visuals); 'no audio' if silent",
+    )
+
+
+class VideoDescriptionResult(BaseModel):
+    """describe_video return shape (Gemini-produced fields only).
+
+    Wrapper adds ``model``, ``video_path``, and ``context_used``.
+    """
+
+    observations: VideoObservations
+    freeform_observations: Optional[str] = Field(
+        None,
+        description="Optional model-driven prose for anything off-taxonomy. "
+        "Leave null when the structured fields cover everything.",
+    )
+
+
 # ---------- score_image ----------
 
 

@@ -294,6 +294,259 @@ def score_image(
     }
 
 
+def _build_video_contents(
+    *,
+    video_file: Any,
+    video_mime: str,
+    prompt: str,
+    intent: Optional[str],
+    context: Optional[str],
+    base_plate_path: Optional[str],
+    identity_refs: Optional[list[str]],
+    style_refs: Optional[list[str]],
+    image_module: Any,
+    gtypes: Any,
+) -> list[Any]:
+    """Build the Gemini multimodal ``contents`` list for video tools.
+
+    Same structure as ``_build_image_contents`` but the target slot is a
+    Files API video object passed via ``gtypes.FileData``. Reference images
+    (base_plate / identity_refs / style_refs) are still passed inline as
+    Pillow Images — Gemini handles mixed image+video contents lists.
+    """
+    parts: list[Any] = [
+        prompts.context_block(prompt=prompt, intent=intent, context=context),
+    ]
+    if base_plate_path:
+        parts.append(prompts.reference_label("base_plate") + ":")
+        parts.append(gemini_media.load_image(base_plate_path, image_module=image_module))
+    if identity_refs:
+        for idx, ref in enumerate(identity_refs, start=1):
+            parts.append(prompts.reference_label("identity_ref", idx) + ":")
+            parts.append(gemini_media.load_image(ref, image_module=image_module))
+    if style_refs:
+        for idx, ref in enumerate(style_refs, start=1):
+            parts.append(prompts.reference_label("style_ref", idx) + ":")
+            parts.append(gemini_media.load_image(ref, image_module=image_module))
+    parts.append("OUTPUT VIDEO to evaluate:")
+    parts.append(
+        gtypes.Part(file_data=gtypes.FileData(file_uri=video_file.uri, mime_type=video_mime))
+    )
+    return parts
+
+
+@mcp.tool()
+def describe_video(
+    video_path: str,
+    prompt: str,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    base_plate_path: Optional[str] = None,
+    identity_refs: Optional[list[str]] = None,
+    style_refs: Optional[list[str]] = None,
+    model: str = "gemini-3.1-pro-preview",
+    temperature: float = 0.3,
+    system_prompt: Optional[str] = None,
+    upload_timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Rich structured observations of a video. No scoring, no verdict —
+    Claude is the judge.
+
+    Returns the eight image-shared observation categories plus four
+    video-specific (motion_and_camera, pacing_and_timing, frame_continuity,
+    audio_quality), an optional freeform field, and ``context_used`` echo.
+
+    Video upload via Gemini's Files API — the file is uploaded, polled until
+    ``state == ACTIVE``, used in the multimodal call, then deleted in a
+    ``finally`` block. ``upload_timeout_s`` bounds the upload+process wait.
+
+    Args:
+        video_path: Absolute path to the video file (.mp4 / .mov / .webm).
+        prompt: The gen prompt that produced the video.
+        intent: The creative brief.
+        context: Per-call freeform notes.
+        base_plate_path: Optional reference frame the video was generated
+            from. Useful for comparing how motion / continuity drift from
+            the start frame.
+        identity_refs: Optional list of character/asset reference paths.
+        style_refs: Optional list of style anchor paths.
+        model: Gemini model id. Default ``gemini-3.1-pro-preview``.
+        temperature: 0..1. Default 0.3.
+        system_prompt: Override the default observation-mode instruction.
+        upload_timeout_s: How long to wait for Files API to mark the upload
+            ACTIVE before raising ``VIDEO_PROCESSING_TIMEOUT``.
+
+    Raises:
+        RuntimeError: ``VIDEO_NOT_FOUND``, ``VIDEO_UPLOAD_FAILED``,
+        ``VIDEO_PROCESSING_TIMEOUT``, ``VIDEO_PROCESSING_FAILED``,
+        ``API_KEY_MISSING``, or ``NO_RESPONSE``.
+    """
+    if not Path(video_path).expanduser().is_file():
+        raise RuntimeError(f"VIDEO_NOT_FOUND: {video_path}")
+
+    image_module = gemini_media.require_pillow()
+    client, gtypes = gemini_media.init_client()
+    video_mime = gemini_media.video_mime_type(video_path)
+
+    uploaded = gemini_media.upload_and_poll_video(
+        client, video_path, timeout_s=upload_timeout_s
+    )
+    try:
+        system_instruction = system_prompt or prompts.describe_video_system_prompt()
+        contents = _build_video_contents(
+            video_file=uploaded,
+            video_mime=video_mime,
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            base_plate_path=base_plate_path,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+            image_module=image_module,
+            gtypes=gtypes,
+        )
+
+        parsed: schemas.VideoDescriptionResult = gemini_media.call_structured(
+            client=client,
+            gtypes=gtypes,
+            model=model,
+            system_instruction=system_instruction,
+            contents=contents,
+            response_schema=schemas.VideoDescriptionResult,
+            temperature=temperature,
+        )
+    finally:
+        gemini_media.cleanup_uploaded(client, uploaded)
+
+    return {
+        "model": model,
+        "video_path": str(Path(video_path).expanduser().resolve()),
+        "observations": parsed.observations.model_dump(),
+        "freeform_observations": parsed.freeform_observations,
+        "context_used": _context_used(
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            base_plate_path=base_plate_path,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+        ),
+    }
+
+
+@mcp.tool()
+def score_video(
+    video_path: str,
+    prompt: str,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    base_plate_path: Optional[str] = None,
+    identity_refs: Optional[list[str]] = None,
+    style_refs: Optional[list[str]] = None,
+    criteria: Optional[list[str]] = None,
+    model: str = "gemini-3.1-pro-preview",
+    temperature: float = 0.3,
+    system_prompt: Optional[str] = None,
+    upload_timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Calibrated scored evaluation of a video against criteria.
+
+    Same six default dimensions as ``score_image``, but with video-adapted
+    prompt language per ``generation-review-loop`` SKILL.md §Generalizing
+    to Video. Reuses ``ImageScoreResult`` schema — shape is identical to
+    image scoring; only the system prompt and lifecycle differ.
+
+    Args mirror ``describe_video`` plus ``criteria`` to override the default
+    six-dim list. ``upload_timeout_s`` bounds the Files API upload wait.
+
+    Raises:
+        Same coded errors as ``describe_video`` plus ``SCHEMA_MISMATCH`` if
+        Gemini returns criterion names that don't match the request.
+    """
+    if not Path(video_path).expanduser().is_file():
+        raise RuntimeError(f"VIDEO_NOT_FOUND: {video_path}")
+
+    criteria_list = list(criteria) if criteria else list(prompts.SIX_DIMENSIONS)
+
+    image_module = gemini_media.require_pillow()
+    client, gtypes = gemini_media.init_client()
+    video_mime = gemini_media.video_mime_type(video_path)
+
+    uploaded = gemini_media.upload_and_poll_video(
+        client, video_path, timeout_s=upload_timeout_s
+    )
+    try:
+        system_instruction = system_prompt or prompts.score_video_system_prompt(
+            criteria_list
+        )
+        contents = _build_video_contents(
+            video_file=uploaded,
+            video_mime=video_mime,
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            base_plate_path=base_plate_path,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+            image_module=image_module,
+            gtypes=gtypes,
+        )
+
+        parsed: schemas.ImageScoreResult = gemini_media.call_structured(
+            client=client,
+            gtypes=gtypes,
+            model=model,
+            system_instruction=system_instruction,
+            contents=contents,
+            response_schema=schemas.ImageScoreResult,
+            temperature=temperature,
+        )
+    finally:
+        gemini_media.cleanup_uploaded(client, uploaded)
+
+    # Strict post-parse validation — same as score_image.
+    parsed_names = [ev.name for ev in parsed.evaluations]
+    expected = set(criteria_list)
+    actual = set(parsed_names)
+    if actual != expected or len(parsed_names) != len(actual):
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        duplicates = sorted({n for n in parsed_names if parsed_names.count(n) > 1})
+        details = []
+        if missing:
+            details.append(f"missing={missing}")
+        if unexpected:
+            details.append(f"unexpected={unexpected}")
+        if duplicates:
+            details.append(f"duplicates={duplicates}")
+        raise RuntimeError(
+            f"SCHEMA_MISMATCH: Gemini returned criterion names that do not "
+            f"match the request exactly. Expected: {sorted(expected)}. "
+            + "; ".join(details)
+        )
+
+    evaluations_dict = {
+        ev.name: {"score": ev.score, "notes": ev.notes}
+        for ev in parsed.evaluations
+    }
+
+    return {
+        "model": model,
+        "video_path": str(Path(video_path).expanduser().resolve()),
+        "evaluations": evaluations_dict,
+        "summary": parsed.summary,
+        "decision_hint": parsed.decision_hint,
+        "context_used": _context_used(
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            base_plate_path=base_plate_path,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+        ),
+    }
+
+
 def main() -> None:
     """Console-script entry point — runs the FastMCP server on stdio."""
     mcp.run()

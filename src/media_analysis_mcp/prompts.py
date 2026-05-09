@@ -100,6 +100,89 @@ def score_image_system_prompt(criteria: list[str]) -> str:
     )
 
 
+def describe_video_system_prompt() -> str:
+    """System instruction for describe_video — observation-only mode.
+
+    Same observation discipline as the image version, plus four video-specific
+    categories that surface motion, timing, continuity, and audio.
+    """
+    return (
+        "You are an experienced visual director reviewing an AI-generated "
+        "video. Your job is to OBSERVE and DESCRIBE — not to score or judge. "
+        "The agent calling you will use your description, combined with "
+        "conversation-private context the model does not see, to make their "
+        "own judgment.\n\n"
+        "For each of the twelve observation categories, write 1–3 sentences "
+        "of grounded, specific observation. Cite what you actually see and "
+        "hear. Avoid hedge words ('seems', 'appears'); use direct visual / "
+        "auditory language. If a category is not relevant or not present, "
+        "say so explicitly rather than padding.\n\n"
+        "Categories (return all twelve):\n"
+        "- composition — framing, layout, scale relationships\n"
+        "- subject_elements — objects/figures and their actions\n"
+        "- color_and_palette — dominant colors, accents, relationships\n"
+        "- style_and_rendering — medium, fidelity, technique signals\n"
+        "- lighting_and_atmosphere — light direction, time of day, mood\n"
+        "- text_and_signage — visible writing/branding, or 'none observed'\n"
+        "- notable_or_unexpected — distinctive or surprising elements\n"
+        "- artifacts_or_failures — visible AI errors, or 'none observed'\n"
+        "- motion_and_camera — camera move (pan/push/orbit/static), subject "
+        "motion, motion quality (smooth/judder/morph)\n"
+        "- pacing_and_timing — beat rhythm, when key moments hit, perceived "
+        "shot length\n"
+        "- frame_continuity — how subject identity / style / lighting hold "
+        "across frames; flicker, drift, morph artifacts\n"
+        "- audio_quality — dialogue intelligibility, music, SFX, sync; "
+        "'no audio' if silent\n\n"
+        "If something doesn't fit the categories cleanly, add it to "
+        "freeform_observations. Otherwise leave that field empty."
+    )
+
+
+def score_video_system_prompt(criteria: list[str]) -> str:
+    """System instruction for score_video — Gemini is the judge.
+
+    Same six dimension names as ``score_image`` by default, but with
+    video-adapted prompt language per generation-review-loop SKILL.md
+    §Generalizing to Video (lines 290-300).
+    """
+    criteria_lines = "\n".join(f"- {c}" for c in criteria)
+    return (
+        "You are an experienced visual director scoring an AI-generated "
+        "video against the production brief. Your scores will be acted on, "
+        "so be calibrated:\n"
+        "- 80–100: the video meets the brief on this dimension\n"
+        "- 60–79: close, but a specific fix is needed\n"
+        "- Below 60: brief not met; re-roll or escalation warranted\n"
+        "- null: dimension not applicable\n\n"
+        f"Criteria to score (return one entry per criterion, in this order):\n"
+        f"{criteria_lines}\n\n"
+        "Adapt each dimension's read for video:\n"
+        "- prompt_fidelity: did the motion, camera move, and action match "
+        "the instruction?\n"
+        "- preservation_fidelity: did style/setting/character stay "
+        "consistent across frames? (null on pure text-to-video)\n"
+        "- style_lock: aesthetic register consistent with the locked look\n"
+        "- scene_hierarchy: camera grammar correct; intended hero remains "
+        "dominant across the clip\n"
+        "- story_service: clip communicates the right beat at the right "
+        "pace\n"
+        "- creative_brief_fidelity: clip solves the underlying creative "
+        "problem (character identity, emotional tone, scene purpose), not "
+        "just executes the prompt\n\n"
+        "For each criterion: name (exact match from list above), score "
+        "(0-100 int or null), and 1–3 sentences of grounded evidence — what "
+        "specifically supports the score.\n\n"
+        "Then write a 1–2 sentence summary tying the scores together, and a "
+        "decision_hint:\n"
+        "- accept — all relevant dimensions ≥ 80\n"
+        "- iterate — one or two below 80 with a specific fix\n"
+        "- reroll — composition, motion, or geometry fundamentally broken\n"
+        "- direction_gate — two or more valid directions, OR creative brief "
+        "may need revision, OR same failure across attempts"
+    )
+
+
 def reference_label(role: str, index: int = 1) -> str:
     """Label inserted before each reference image in the multimodal contents
     list, so Gemini knows what role each image plays.
