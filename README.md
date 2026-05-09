@@ -100,6 +100,11 @@ Generation tools:
 - `get_video_job` — reads `<out_root>/jobs/<job_id>/status.json`, optionally polls Replicate, and downloads outputs when the prediction succeeds.
 - `cancel_video_job` — cancels a running provider prediction and updates local status.
 
+If you pass a custom `out_root` to `start_video_job`, pass the same `out_root`
+to `get_video_job` / `cancel_video_job`. `start_video_job` can forward a
+`webhook_url` to Replicate, but this repo does not yet include an HTTP webhook
+receiver; polling remains the supported completion path.
+
 Run the media-analysis server on stdio:
 
 ```bash

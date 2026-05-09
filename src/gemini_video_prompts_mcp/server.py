@@ -454,7 +454,7 @@ def generate_video(
             Layerable on either mode above.
         reference_audios: Up to 3 reference audio paths; total ≤ 15s. Requires
             an anchor (image / reference_images / reference_videos).
-        duration: 1..15 seconds, or -1 for the model's "intelligent" length.
+        duration: 4..15 seconds, or -1 for the model's "intelligent" length.
         resolution: ``"480p"`` | ``"720p"`` | ``"1080p"``.
         aspect_ratio: One of the Seedance enum values (incl. ``"adaptive"``).
         generate_audio: If True, Seedance generates synchronized audio.
@@ -636,6 +636,10 @@ def start_video_job(
     inputs, creates a durable local job record under ``<out_root>/jobs/<job_id>``,
     starts a non-blocking Replicate prediction, and returns the current status.
     Use ``get_video_job(job_id)`` to poll or collect completed outputs.
+
+    If ``out_root`` is set here, pass the same ``out_root`` to ``get_video_job``
+    and ``cancel_video_job``. ``webhook_url`` is forwarded to Replicate for
+    future HTTP receiver workflows; this stdio MCP still relies on polling.
     """
     ctx = _build_video_context(
         prompt=prompt,
@@ -658,8 +662,7 @@ def start_video_job(
 
     job_id = uuid.uuid4().hex[:12]
     out_root_path: Path = ctx["out_root"]
-    job_dir = ensure_dir(Path(f"{ctx['job_dir']}_{job_id}"))
-    ensure_dir(_jobs_root(out_root_path) / job_id)
+    job_dir = Path(f"{ctx['job_dir']}_{job_id}")
 
     request = {
         "job_id": job_id,
@@ -675,7 +678,6 @@ def start_video_job(
         "validation_warnings": ctx["validation_warnings"],
         "job_dir": str(job_dir),
     }
-    write_json(_job_request_path(out_root_path, job_id), request)
 
     prediction = seedance.create_seedance_prediction(
         api_params=api_params,
@@ -686,6 +688,10 @@ def start_video_job(
     prediction_id = prediction.get("id")
     if not prediction_id:
         raise RuntimeError("REPLICATE_ERROR: prediction create returned no id")
+
+    job_dir = ensure_dir(job_dir)
+    ensure_dir(_jobs_root(out_root_path) / job_id)
+    write_json(_job_request_path(out_root_path, job_id), request)
 
     status = {
         "status": _prediction_status(prediction),

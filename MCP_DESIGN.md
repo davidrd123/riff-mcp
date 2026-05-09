@@ -1,6 +1,6 @@
 # MCP Layer — Design
 
-**Status:** v1 implemented through Step 8; v2 Option A local async jobs mock-verified
+**Status:** v1 implemented through Step 8; v2 Option A local async jobs live-smoked
 **Author:** David Dickinson + Claude
 **Last updated:** 2026-05-09
 
@@ -286,7 +286,7 @@ def generate_video(
     reference_videos: Optional[List[str]] = None,   # ≤3, total ≤15s, [Video1]..[Video3]
     reference_audios: Optional[List[str]] = None,   # ≤3, total ≤15s, [Audio1]..[Audio3]
     # Output controls
-    duration: int = 5,                              # 1..15, or -1 for "intelligent"
+    duration: int = 5,                              # 4..15, or -1 for "intelligent"
     resolution: str = "720p",                       # "480p" | "720p" | "1080p"
     aspect_ratio: str = "16:9",                     # "16:9"|"4:3"|"1:1"|"3:4"|"9:16"|"21:9"|"9:21"|"adaptive"
     generate_audio: bool = False,                   # NB: schema default true; we override to false
@@ -303,7 +303,7 @@ def generate_video(
 - `image` or `last_frame_image` set AND any of `reference_images` set → mutually exclusive per schema
 - `last_frame_image` set without `image` → "last_frame_image requires a first frame"
 - `len(reference_images) > 9`, `len(reference_videos) > 3`, `len(reference_audios) > 3` → per-type cap exceeded (schema-enforced)
-- `duration` not in `{-1, 1..15}` → out of range
+- `duration` not in `{-1, 4..15}` → out of range
 - `reference_audios` set but no `image`/`reference_images`/`reference_videos` → schema requires anchor
 - `resolution` not in `{"480p","720p","1080p"}` → invalid
 - `aspect_ratio` not in the schema enum → invalid
@@ -811,10 +811,11 @@ V2 should be scoped as a set of separable tracks. They do not all need to ship t
 
 Baseline v2 candidate.
 
-Implementation status: initial local async surface is implemented and
-mock-verified (`start_video_job`, `get_video_job`, `cancel_video_job`). It uses
-durable local `request.json` / `status.json` files and non-blocking Replicate
-prediction creation. Live Replicate smoke for this path is still pending.
+Implementation status: initial local async surface is implemented,
+mock-verified, and live-smoked (`start_video_job`, `get_video_job`,
+`cancel_video_job`). It uses durable local `request.json` / `status.json` files,
+non-blocking Replicate prediction creation, and terminal-success output
+download.
 
 Add:
 - `start_video_job(...)` - creates the Replicate prediction and returns `{job_id, prediction_id, status, job_dir}` immediately.
@@ -907,7 +908,7 @@ Cons:
 ### Recommended Sequence
 
 V2.0:
-- Local async jobs: `start_video_job`, `get_video_job`, optional `cancel_video_job`. Initial implementation is in place; live smoke pending.
+- Local async jobs: `start_video_job`, `get_video_job`, optional `cancel_video_job`. Initial implementation is in place and live-smoked.
 - Durable local job status files. Initial implementation is in place.
 - Blocking `generate_video` preserved as a wrapper.
 - `compare_videos`.
@@ -960,7 +961,7 @@ Captured 2026-05-08 from `bytedance/seedance-2.0` Replicate input schema. Source
 | `reference_images` | uri[] | ≤9; mut.ex. with `image`/`last_frame_image`; correlated as `[Image1]..[Image9]` | `[]` |
 | `reference_videos` | uri[] | ≤3, total ≤15s; correlated as `[Video1]..[Video3]` | `[]` |
 | `reference_audios` | uri[] | ≤3, total ≤15s; needs anchor; `[Audio1]..[Audio3]` | `[]` |
-| `duration` | int | -1..15 (-1 = "intelligent") | 5 |
+| `duration` | int | -1 or 4..15 (-1 = "intelligent") | 5 |
 | `resolution` | enum | `480p` / `720p` / `1080p` | `720p` |
 | `aspect_ratio` | enum | `16:9`/`4:3`/`1:1`/`3:4`/`9:16`/`21:9`/`9:21`/`adaptive` | `16:9` |
 | `generate_audio` | bool | dialogue (double-quoted in prompt) + SFX + music | **`true`** (we override to `false`) |

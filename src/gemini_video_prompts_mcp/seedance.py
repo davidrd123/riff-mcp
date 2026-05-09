@@ -204,10 +204,11 @@ def build_seedance_video_params(
             f"({len(ref_audios)} > {MAX_REFERENCE_AUDIOS})"
         )
 
-    # Duration: -1 (intelligent) or 1..15
-    if duration != -1 and not (1 <= duration <= 15):
+    # Duration: -1 (intelligent) or 4..15. Replicate's published schema is
+    # looser in some places, but the live Seedance endpoint rejects <4.
+    if duration != -1 and not (4 <= duration <= 15):
         raise RuntimeError(
-            f"INVALID_INPUT: duration must be -1 or in [1, 15] (got {duration})"
+            f"INVALID_INPUT: duration must be -1 or in [4, 15] (got {duration})"
         )
 
     # Resolution / aspect_ratio enum

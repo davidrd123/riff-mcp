@@ -39,6 +39,7 @@ def test_generate_video_dry_run_modes() -> None:
         {"prompt": "x", "image": "a.png", "reference_images": ["b.png"]},
         {"prompt": "x", "last_frame_image": "b.png"},
         {"prompt": "x", "duration": 0},
+        {"prompt": "x", "duration": 3},
         {"prompt": "x", "reference_audios": ["a.wav"]},
         {"prompt": "x", "reference_videos": ["1.mp4", "2.mp4", "3.mp4", "4.mp4"]},
     ],
@@ -200,6 +201,73 @@ def test_start_video_job_uses_unique_job_dirs(
     assert first["job_dir"] != second["job_dir"]
     assert first["job_dir"].endswith(first["job_id"])
     assert second["job_dir"].endswith(second["job_id"])
+
+
+def test_start_video_job_create_failure_leaves_no_local_job_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    def fake_create_seedance_prediction(**kwargs):
+        raise RuntimeError("REPLICATE_API_TOKEN_MISSING: missing token")
+
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        fake_create_seedance_prediction,
+    )
+
+    out_root = tmp_path / "out"
+    with pytest.raises(RuntimeError, match="^REPLICATE_API_TOKEN_MISSING:"):
+        gen_server.start_video_job(
+            prompt="Use [Image1]",
+            image=str(image_path),
+            out_root=str(out_root),
+        )
+
+    assert not (out_root / "jobs").exists()
+
+
+def test_get_video_job_poll_false_returns_local_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, image_path: Path
+) -> None:
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "create_seedance_prediction",
+        lambda **kwargs: {
+            "id": "pred-local",
+            "status": "processing",
+            "version": "@latest",
+            "created_at": "2026-05-09T10:00:00Z",
+            "started_at": "2026-05-09T10:00:01Z",
+            "completed_at": None,
+            "output": None,
+            "metrics": None,
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        gen_server.seedance,
+        "get_seedance_prediction",
+        lambda prediction_id: pytest.fail("poll=False should not call provider"),
+    )
+
+    started = gen_server.start_video_job(
+        prompt="Use [Image1]",
+        image=str(image_path),
+        out_root=str(tmp_path / "out"),
+    )
+    result = gen_server.get_video_job(
+        started["job_id"],
+        out_root=str(tmp_path / "out"),
+        poll=False,
+    )
+
+    assert result["status"] == "processing"
+    assert result["prediction_id"] == "pred-local"
+
+
+def test_get_video_job_unknown_job_id_is_coded(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="^JOB_NOT_FOUND: missing-job"):
+        gen_server.get_video_job("missing-job", out_root=str(tmp_path / "out"))
 
 
 def test_get_video_job_finalizes_succeeded_prediction(
