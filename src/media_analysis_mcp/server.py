@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from . import gemini_media, prompts, schemas
+from . import ffmpeg_utils, gemini_media, prompts, schemas
 
 
 mcp = FastMCP("media-analysis-mcp")
@@ -577,6 +577,63 @@ def score_video(
             identity_refs=identity_refs,
             style_refs=style_refs,
         ),
+    }
+
+
+@mcp.tool()
+def extract_video_frames(
+    video_path: str,
+    timestamps: list[ffmpeg_utils.Timestamp],
+    out_dir: Optional[str] = None,
+    title_prefix: Optional[str] = None,
+) -> dict[str, Any]:
+    """Extract one PNG frame per timestamp via ffmpeg.
+
+    Frame-accurate seek (``-ss`` after ``-i``) — slower than fast seek but
+    lands on the exact target frame, which matters for cut-detection
+    workflows where frames are sampled at sub-second resolution.
+
+    Args:
+        video_path: Absolute path to the video file.
+        timestamps: List of seconds (``5.5``) or HH:MM:SS / MM:SS strings
+            (``"00:00:05.500"``). Order is preserved in the returned list.
+        out_dir: Default ``<video_dir>/frames/``.
+        title_prefix: Default ``<video_basename_without_ext>``.
+
+    Returns:
+        ``{video_path, frame_count, frames: [{timestamp_s, path, width,
+        height}]}`` with one entry per input timestamp.
+
+    Raises:
+        RuntimeError: ``VIDEO_NOT_FOUND``, ``FFMPEG_NOT_INSTALLED``,
+        ``FFMPEG_FAILED`` (e.g., timestamp past the video end), or
+        ``INVALID_INPUT`` (malformed timestamp).
+    """
+    video = Path(video_path).expanduser().resolve()
+    if not video.is_file():
+        raise RuntimeError(f"VIDEO_NOT_FOUND: {video}")
+
+    resolved_out_dir = (
+        Path(out_dir).expanduser().resolve()
+        if out_dir
+        else (video.parent / "frames").resolve()
+    )
+    resolved_prefix = title_prefix if title_prefix else video.stem
+
+    image_module = gemini_media.require_pillow()
+
+    frames = ffmpeg_utils.extract_frames(
+        video_path=video,
+        timestamps=timestamps,
+        out_dir=resolved_out_dir,
+        title_prefix=resolved_prefix,
+        image_module=image_module,
+    )
+
+    return {
+        "video_path": str(video),
+        "frame_count": len(frames),
+        "frames": frames,
     }
 
 
