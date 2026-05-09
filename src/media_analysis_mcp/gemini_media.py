@@ -126,11 +126,18 @@ def upload_and_poll_video(
         if state_str == "ACTIVE":
             return current
         if state_str == "FAILED":
+            # Best-effort cleanup so the FAILED file doesn't leak on Gemini's
+            # side. The caller's finally block doesn't run for this raise:
+            # we never returned the file object, so cleanup_uploaded(client,
+            # uploaded) wouldn't be paired in the caller. Delete here.
+            try:
+                client.files.delete(name=uploaded.name)
+            except Exception:
+                pass
             raise RuntimeError(
                 f"VIDEO_PROCESSING_FAILED: file {uploaded.name} ended in FAILED state"
             )
         if time.perf_counter() > deadline:
-            # Best-effort cleanup before raising.
             try:
                 client.files.delete(name=uploaded.name)
             except Exception:

@@ -351,10 +351,16 @@ def _build_video_contents(
 
 def _validate_fps(fps: Optional[float]) -> None:
     """Range-check fps (caller passes None when unspecified). Raises
-    ``INVALID_INPUT`` for values outside (0, 24]."""
+    ``INVALID_INPUT`` for values outside (0, 24] or non-numeric inputs.
+
+    Explicitly rejects ``bool`` because ``bool`` subclasses ``int`` in
+    Python, and JSON/MCP clients can deliver ``True``/``False`` where a
+    number is expected. ``isinstance(True, (int, float))`` is True, so
+    without the explicit bool check ``True`` silently coerces to 1.0.
+    """
     if fps is None:
         return
-    if not isinstance(fps, (int, float)) or fps <= 0.0 or fps > 24.0:
+    if isinstance(fps, bool) or not isinstance(fps, (int, float)) or fps <= 0.0 or fps > 24.0:
         raise RuntimeError(
             f"INVALID_INPUT: fps must be a number in (0, 24] (got {fps!r})"
         )

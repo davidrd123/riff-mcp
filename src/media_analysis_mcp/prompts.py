@@ -27,13 +27,18 @@ def context_block(
     *, prompt: str, intent: Optional[str], context: Optional[str]
 ) -> str:
     """Build the per-call context block woven into both describe and score
-    user-content. Empty fields are omitted rather than rendered as 'None'."""
+    user-content for image and video tools. Empty fields are omitted rather
+    than rendered as 'None'.
+
+    The "media" wording is deliberately modality-neutral so the same helper
+    works for both image and video describe/score paths.
+    """
     parts: list[str] = []
     if intent and intent.strip():
         parts.append(f"Brief: {intent.strip()}")
     if context and context.strip():
         parts.append(f"Context for this evaluation: {context.strip()}")
-    parts.append(f"The prompt that produced the image: {prompt.strip()}")
+    parts.append(f"The prompt that produced the media: {prompt.strip()}")
     return "\n\n".join(parts)
 
 
