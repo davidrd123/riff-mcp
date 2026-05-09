@@ -75,7 +75,7 @@ If a future tool or input feels vault-specific, it doesn't belong in these MCPs.
 
 ### Today's flow
 
-1. Agent constructs a `cd /Users/.../gemini-video-prompts && uv run gemini-video-prompts --prompt "..." --system-prompt "..."` Bash command from project context.
+1. Agent constructs a `cd /Users/.../riff-mcp && uv run gemini-video-prompts --prompt "..." --system-prompt "..."` Bash command from project context.
 2. Backgrounds it via `run_in_background=true` so the conversation stays responsive.
 3. On completion, reads the captured stdout, parses the "saved N output(s) to X" line, and Reads the resulting PNG path.
 4. Reasons about the image inline against six named dimensions (`generation-review-loop` SKILL.md), writes a freeform evaluation, surfaces it.
@@ -84,7 +84,7 @@ The two friction points are step 1 (long bespoke shell strings) and step 4 (unst
 
 ### Prior art
 
-- **`gemini-video-prompts/src/gemini_video_prompts/cli.py`** — clean separation between argparse plumbing and `generate_image_job(...)` / `generate_job(...)` workers. The image worker (`cli.py:622-733`) returns a well-shaped result dict and is reusable. **However**, it expects a *fully resolved* job dict (`cli.py:309-375` is the resolver), so the MCP can't call it directly without first reproducing or refactoring that resolver. See §Step 0 below.
+- **`riff-mcp/src/gemini_video_prompts/cli.py`** — clean separation between argparse plumbing and `generate_image_job(...)` / `generate_job(...)` workers. The image worker (`cli.py:622-733`) returns a well-shaped result dict and is reusable. **However**, it expects a *fully resolved* job dict (`cli.py:309-375` is the resolver), so the MCP can't call it directly without first reproducing or refactoring that resolver. See §Step 0 below.
 - **`/Users/daviddickinson/Projects/LLM/DMPOST31/ae-mcp-dmpost/dmpost-gemini-mcp/server.py`** — FastMCP-based server using the same Python/Gemini stack. Demonstrates `@mcp.tool()` shape, error-code idiom, date-stamped output dirs, and Replicate integration via `vendor/replicate_min.py`. The `nano_segment` tool (`server.py:298-439`) is a working example of a Replicate-backed tool, but it's single-file-input — Seedance needs multi-file. The `nano_analyze_media` tool (`server.py:443-514`) demonstrates Gemini multimodal analysis with video-upload + poll; we lift its `upload_and_poll_video` / `cleanup_uploaded` helpers for `describe_video` / `score_video`.
 - **`DMPOST31/.../vendor/replicate_min.py`** — minimal `replicate.run()` wrapper with file-handle lifecycle, sidecar dict, metrics. The lower-level `generate()` (line 107) takes a pure params dict and is the right entry point for Seedance; the higher-level `edit()` (line 173) only handles a single image and is too narrow for our needs.
 - **Seedance prompting guide** (`vault_gml/visual/seedance-prompting-guide.md:23-42`) — three named modes (`text_to_video`, `first_last_frames`, `omni_reference`); upload-order reference syntax; explicit role assignment required because "the model does not infer purpose." **Caveat:** the guide uses `@Image1` shorthand throughout, but the Replicate Seedance schema accepts bracket tokens (`[Image1]`). The MCP returns the provider's true syntax; agents using the vault guide as a *writing* reference should paste the bracket form from `references[].token` rather than the guide's `@` shorthand.
@@ -97,8 +97,8 @@ Two independent MCP servers, each registered in `~/.claude.json` (or per-project
 
 | MCP | Repo | Purpose | Backends |
 |-----|------|---------|----------|
-| `gemini-prompts-mcp` | sibling package inside `gemini-video-prompts/` | Generate images and videos | Gemini (image), Replicate-Seedance (video) |
-| `media-analysis-mcp` | sibling package inside `gemini-video-prompts/` | Describe / score / compare images and videos; extract frames; extract visual tokens | Gemini multimodal (analysis); ffmpeg/ffprobe (frame extraction, media info) |
+| `gemini-prompts-mcp` | sibling package inside `riff-mcp/` | Generate images and videos | Gemini (image), Replicate-Seedance (video) |
+| `media-analysis-mcp` | sibling package inside `riff-mcp/` | Describe / score / compare images and videos; extract frames; extract visual tokens | Gemini multimodal (analysis); ffmpeg/ffprobe (frame extraction, media info) |
 
 ### Why one MCP for both image + video gen (not split)
 
@@ -122,7 +122,7 @@ Reconsider the split if the server file grows beyond ~500 lines or if backend-sp
 ### File layout
 
 ```
-gemini-video-prompts/
+riff-mcp/
 ├── src/
 │   ├── gemini_video_prompts/         # existing CLI package
 │   │   └── cli.py                    # MODIFIED — extract build_resolved_image_job()
@@ -483,10 +483,10 @@ System dep: `ffprobe` (typically installed alongside `ffmpeg` — `brew install 
 
 ### File layout
 
-Sibling package inside the existing `gemini-video-prompts/` repo:
+Sibling package inside the existing `riff-mcp/` repo:
 
 ```
-gemini-video-prompts/
+riff-mcp/
 ├── src/
 │   ├── gemini_video_prompts/         # CLI
 │   ├── gemini_video_prompts_mcp/     # MCP #1 (generation)
@@ -879,8 +879,8 @@ This audit informs *what fields the MCP returns* but does not *shape the field n
 
 ## File reference index
 
-- This doc: `/Users/daviddickinson/Projects/Lora/gemini-video-prompts/MCP_DESIGN.md`
-- CLI we're wrapping: `/Users/daviddickinson/Projects/Lora/gemini-video-prompts/src/gemini_video_prompts/cli.py`
+- This doc: `/Users/daviddickinson/Projects/Lora/riff-mcp/MCP_DESIGN.md`
+- CLI we're wrapping: `/Users/daviddickinson/Projects/Lora/riff-mcp/src/gemini_video_prompts/cli.py`
 - DMPOST31 server prior art: `/Users/daviddickinson/Projects/LLM/DMPOST31/ae-mcp-dmpost/dmpost-gemini-mcp/server.py`
 - DMPOST31 Replicate vendor: `/Users/daviddickinson/Projects/LLM/DMPOST31/ae-mcp-dmpost/dmpost-gemini-mcp/vendor/replicate_min.py`
 - Generation review loop skill: `~/.claude/skills/generation-review-loop/SKILL.md`

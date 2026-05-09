@@ -1,6 +1,12 @@
-# Gemini Video Prompts
+# riff-mcp
 
-Small standalone batch runner for Gemini image or video generation. The repo also hosts two companion MCP servers — `gemini-prompts-mcp` (wraps the CLI as MCP tools) and `media-analysis-mcp` (Gemini multimodal analysis + ffmpeg utilities). Each is its own console script + Python package; see [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
+Toolkit for the *riff* workflow — iteratively generate, analyze, and refine AI-generated media. Three pieces in one repo:
+
+- `gemini-video-prompts` — the original batch CLI for Gemini image/video generation (still the local entry point for batch runs and dry-runs).
+- `gemini-prompts-mcp` — wraps the CLI as MCP tools (`generate_image` via Gemini, `generate_video` via Replicate-Seedance).
+- `media-analysis-mcp` — Gemini multimodal analysis (`describe_*`, `score_*`, `compare_images`, `extract_visual_tokens`) + ffmpeg-based `extract_video_frames`.
+
+The name comes from the `generation-review-loop` skill's vocabulary for iterative prompt work — *the riff loop*: generate → review → extract → iterate. See [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
 
 It is built around the official `google-genai` Python SDK. Two generation flows
 are supported:
@@ -23,7 +29,7 @@ preview can swap in a different model code without editing the code.
 Preferred with `uv`:
 
 ```bash
-cd gemini-video-prompts
+cd riff-mcp
 uv sync
 cp .env.example .env
 ```
@@ -33,7 +39,7 @@ Then run with `uv run`.
 Fallback with plain venv/pip:
 
 ```bash
-cd gemini-video-prompts
+cd riff-mcp
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
