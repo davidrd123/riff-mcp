@@ -11,23 +11,30 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "mcp[cli]>=1.0.0",
     "replicate>=0.34.0",
+    "pydantic>=2.0",
 ]
 
 [project.scripts]
 gemini-video-prompts = "gemini_video_prompts.cli:main"
 gemini-prompts-mcp = "gemini_video_prompts_mcp.server:main"
+media-analysis-mcp = "media_analysis_mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/gemini_video_prompts", "src/gemini_video_prompts_mcp"]
+packages = [
+  "src/gemini_video_prompts",
+  "src/gemini_video_prompts_mcp",
+  "src/media_analysis_mcp",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
   "src/gemini_video_prompts",
   "src/gemini_video_prompts_mcp",
+  "src/media_analysis_mcp",
   "pyproject.toml",
   "README.md",
   ".env.example",

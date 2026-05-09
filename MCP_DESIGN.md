@@ -1,10 +1,14 @@
 # MCP Layer — Design
 
-**Status:** Draft, pre-implementation — v6
+**Status:** Draft, pre-implementation — v7
 **Author:** David Dickinson + Claude
 **Last updated:** 2026-05-08
 
 Wrap the existing `gemini-video-prompts` CLI as an MCP server, and build a separate media-analysis MCP, so Claude Code can invoke generation and evaluation as typed tool calls instead of shelling out to `Bash → uv run`.
+
+## v7 changes from v6
+
+- **Consolidated `media-analysis-mcp` into the existing repo** as a sibling package alongside `gemini_video_prompts_mcp`, instead of a new repo at `~/Projects/LLM/media-analysis-mcp/`. MCP servers are processes registered via console script + `--project` path; the surrounding repo layout is invisible to Claude Code. The "separate repo" justification in v6 ("matches DMPOST31 convention") was a misread — DMPOST31 itself is one repo with multiple MCP subfolders. One repo, multiple `[project.scripts]` entries, multiple sibling packages under `src/` is the right shape for this stage. Reconsider splitting only if (a) a publishable subset emerges or (b) one MCP starts pulling deps the other shouldn't carry.
 
 ## v6 changes from v5
 
@@ -94,7 +98,7 @@ Two independent MCP servers, each registered in `~/.claude.json` (or per-project
 | MCP | Repo | Purpose | Backends |
 |-----|------|---------|----------|
 | `gemini-prompts-mcp` | sibling package inside `gemini-video-prompts/` | Generate images and videos | Gemini (image), Replicate-Seedance (video) |
-| `media-analysis-mcp` | new repo at `~/Projects/LLM/media-analysis-mcp/` | Describe / score / compare images and videos; extract frames; extract visual tokens | Gemini multimodal (analysis); ffmpeg/ffprobe (frame extraction, media info) |
+| `media-analysis-mcp` | sibling package inside `gemini-video-prompts/` | Describe / score / compare images and videos; extract frames; extract visual tokens | Gemini multimodal (analysis); ffmpeg/ffprobe (frame extraction, media info) |
 
 ### Why one MCP for both image + video gen (not split)
 
@@ -479,39 +483,49 @@ System dep: `ffprobe` (typically installed alongside `ffmpeg` — `brew install 
 
 ### File layout
 
+Sibling package inside the existing `gemini-video-prompts/` repo:
+
 ```
-media-analysis-mcp/
-├── pyproject.toml
-├── README.md
-├── .env.example
-└── src/
-    └── media_analysis_mcp/
-        ├── __init__.py
-        ├── __main__.py
-        ├── server.py                  # FastMCP entry + tool definitions
-        ├── schemas.py                 # Pydantic response schemas for Gemini structured output
-        ├── prompts.py                 # describe / score / token-extract / compare templates
-        ├── gemini_media.py            # video upload+poll, image loading, multimodal call dispatch
-        └── ffmpeg_utils.py            # frame extraction (ffmpeg) + media probe (ffprobe)
+gemini-video-prompts/
+├── src/
+│   ├── gemini_video_prompts/         # CLI
+│   ├── gemini_video_prompts_mcp/     # MCP #1 (generation)
+│   └── media_analysis_mcp/           # MCP #2 (analysis) — THIS PACKAGE
+│       ├── __init__.py
+│       ├── __main__.py
+│       ├── server.py                 # FastMCP entry + tool definitions
+│       ├── schemas.py                # Pydantic response schemas for Gemini structured output
+│       ├── prompts.py                # describe / score / token-extract / compare templates
+│       ├── gemini_media.py           # video upload+poll, image loading, multimodal call dispatch
+│       └── ffmpeg_utils.py           # frame extraction (ffmpeg) + media probe (ffprobe)
+├── pyproject.toml                    # adds media-analysis-mcp console script + Hatch entries
+└── ...
 ```
 
-`pyproject.toml`:
+`pyproject.toml` deltas (additive; v6 already added `mcp[cli]`, `replicate`):
 
 ```toml
-[project]
-name = "media-analysis-mcp"
-version = "0.1.0"
-requires-python = ">=3.10"
 dependencies = [
-    "mcp[cli]>=1.0.0",
-    "google-genai>=1.49.0",
+    "google-genai>=1.47.0",
     "pillow>=10.4.0",
+    "PyYAML>=6.0.2",
     "python-dotenv>=1.0.1",
+    "mcp[cli]>=1.0.0",
+    "replicate>=0.34.0",
     "pydantic>=2.0",
 ]
 
 [project.scripts]
-media-analysis-mcp = "media_analysis_mcp.server:main"
+gemini-video-prompts = "gemini_video_prompts.cli:main"        # existing CLI
+gemini-prompts-mcp   = "gemini_video_prompts_mcp.server:main" # MCP #1
+media-analysis-mcp   = "media_analysis_mcp.server:main"       # MCP #2
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "src/gemini_video_prompts",
+  "src/gemini_video_prompts_mcp",
+  "src/media_analysis_mcp",
+]
 ```
 
 System dep: `ffmpeg` + `ffprobe` (`brew install ffmpeg` on Mac). README documents this as a prereq.
@@ -756,7 +770,7 @@ Tracking method: log MCP calls to a side-file with `mode`, `decision_hint` (when
 | 1 | Scaffold MCP #1 package; `pyproject.toml` updates per the diff above. | `uv run gemini-prompts-mcp` starts cleanly on stdio. |
 | 2 | Implement `generate_image` (Gemini path). | Wire into Claude Code's `.mcp.json`, fire today's v13 prompt via the MCP, compare output to direct CLI run. |
 | 3 | Copy `replicate_min.py`, edit `_ext_from_url`. Implement `seedance.py` (`build_seedance_video_params`, `derive_mode`, `build_references_map`, `check_prompt_references`, `run_seedance_job`). Implement `generate_video` calling into `seedance.py`. Add `ffprobe` `media_info` probe. | Smoke test with a known-good Seedance prompt + start frame. Inspect job_dir, manifest, references map, media_info, validation_warnings. |
-| 4 | Scaffold MCP #2 repo at `~/Projects/LLM/media-analysis-mcp/`. | `uv run media-analysis-mcp` starts on stdio. |
+| 4 | Scaffold MCP #2 as a sibling package at `src/media_analysis_mcp/` inside the existing repo. Add `pydantic` to deps and `media-analysis-mcp` console script + Hatch packaging. | `uv run media-analysis-mcp` starts on stdio. |
 | 5 | Implement `gemini_media.py` (image load, video upload+poll). Implement `prompts.py` (describe / score / token templates). Implement `describe_image` and `score_image` with default criteria. | Pipe today's v13 PNG through both tools, compare outputs to my hand-written eval from this session. A/B note. |
 | 6 | Implement `describe_video` and `score_video`. | Pipe a known Seedance .mp4 through both. Compare to manual eval. |
 | 7 | Implement `ffmpeg_utils.py` and `extract_video_frames`. | Verify timestamp precision against a video with a known cut at 2.5s. |

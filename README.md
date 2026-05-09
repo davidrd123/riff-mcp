@@ -1,6 +1,6 @@
 # Gemini Video Prompts
 
-Small standalone batch runner for Gemini image or video generation.
+Small standalone batch runner for Gemini image or video generation. The repo also hosts two companion MCP servers — `gemini-prompts-mcp` (wraps the CLI as MCP tools) and `media-analysis-mcp` (Gemini multimodal analysis + ffmpeg utilities). Each is its own console script + Python package; see [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
 
 It is built around the official `google-genai` Python SDK. Two generation flows
 are supported:
