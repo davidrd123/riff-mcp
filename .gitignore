@@ -1,4 +1,5 @@
 .env
+.mcp.json
 .venv/
 .DS_Store
 .pytest_cache/
