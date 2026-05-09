@@ -140,3 +140,39 @@ def test_score_image_rejects_criterion_name_mismatch(
             prompt="make a red test image",
             criteria=criteria,
         )
+
+
+def test_analyze_image_returns_question_and_answer(
+    monkeypatch: pytest.MonkeyPatch, image_path: Path
+) -> None:
+    def fake_call_unstructured(**kwargs):
+        assert kwargs["model"] == "test-model"
+        # The contents list should embed the question via context_block.
+        first_text = kwargs["contents"][0]
+        assert "Question: how saturated is the red?" in first_text
+        return "The red is fully saturated; no desaturation visible."
+
+    monkeypatch.setattr(
+        server.gemini_media, "call_unstructured", fake_call_unstructured
+    )
+
+    result = server.analyze_image(
+        image_path=str(image_path),
+        question="how saturated is the red?",
+        intent="ad-hoc inspection",
+        model="test-model",
+    )
+
+    assert result["model"] == "test-model"
+    assert result["image_path"] == str(image_path.resolve())
+    assert result["question"] == "how saturated is the red?"
+    assert result["answer"] == "The red is fully saturated; no desaturation visible."
+    assert result["context_used"]["question"] == "how saturated is the red?"
+    assert result["context_used"]["intent"] == "ad-hoc inspection"
+    assert result["context_used"]["prompt"] is None
+
+
+def test_analyze_image_errors_on_missing_file(tmp_path: Path) -> None:
+    bogus = tmp_path / "not-here.png"
+    with pytest.raises(RuntimeError, match="^IMAGE_NOT_FOUND:"):
+        server.analyze_image(image_path=str(bogus), question="anything")

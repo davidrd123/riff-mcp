@@ -36,21 +36,29 @@ TOKEN_CATEGORIES: list[str] = [
 
 
 def context_block(
-    *, prompt: str, intent: Optional[str], context: Optional[str]
+    *,
+    prompt: Optional[str] = None,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    question: Optional[str] = None,
 ) -> str:
-    """Build the per-call context block woven into both describe and score
+    """Build the per-call context block woven into describe / score / analyze
     user-content for image and video tools. Empty fields are omitted rather
     than rendered as 'None'.
 
-    The "media" wording is deliberately modality-neutral so the same helper
-    works for both image and video describe/score paths.
+    When ``question`` is provided (analyze_* tools), it leads the block as the
+    primary anchor. ``prompt`` is required for describe / score (the gen prompt
+    that produced the media); for analyze it's optional context.
     """
     parts: list[str] = []
+    if question and question.strip():
+        parts.append(f"Question: {question.strip()}")
     if intent and intent.strip():
         parts.append(f"Brief: {intent.strip()}")
     if context and context.strip():
         parts.append(f"Context for this evaluation: {context.strip()}")
-    parts.append(f"The prompt that produced the media: {prompt.strip()}")
+    if prompt and prompt.strip():
+        parts.append(f"The prompt that produced the media: {prompt.strip()}")
     return "\n\n".join(parts)
 
 
@@ -114,6 +122,42 @@ def score_image_system_prompt(criteria: list[str]) -> str:
         "- reroll — composition or geometry fundamentally broken\n"
         "- direction_gate — two or more valid directions exist, OR creative "
         "brief itself may need revision, OR same failure across attempts"
+    )
+
+
+def analyze_image_system_prompt() -> str:
+    """System instruction for analyze_image — free-form Q&A mode.
+
+    The escape hatch when describe_image's 8-category taxonomy is too rigid
+    or off-axis. Same observation discipline (no hedge words, grounded,
+    direct), but no schema lock — Gemini answers the agent's question.
+    """
+    return (
+        "You are an experienced visual director analyzing an AI-generated "
+        "image. Answer the agent's question directly, with grounded "
+        "specific observation. Cite what you actually see. Avoid hedge "
+        "words ('seems', 'appears'); use direct visual language. Be "
+        "concise — the agent calling you knows what they want; just "
+        "answer the question. If the question can't be answered from the "
+        "image, say so plainly rather than padding."
+    )
+
+
+def analyze_video_system_prompt() -> str:
+    """System instruction for analyze_video — free-form Q&A mode.
+
+    The escape hatch when describe_video's 12-category taxonomy is too rigid
+    or off-axis. Same observation discipline as analyze_image plus auditory
+    awareness — answer the question directly, no schema lock.
+    """
+    return (
+        "You are an experienced visual director analyzing an AI-generated "
+        "video. Answer the agent's question directly, with grounded "
+        "specific observation. Cite what you actually see and hear. Avoid "
+        "hedge words ('seems', 'appears'); use direct visual / auditory "
+        "language. Be concise — the agent calling you knows what they "
+        "want; just answer the question. If the question can't be "
+        "answered from the video, say so plainly rather than padding."
     )
 
 

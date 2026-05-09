@@ -207,3 +207,36 @@ def call_structured(
         "NO_RESPONSE: Gemini returned no usable response (no parsed object, "
         "no text)."
     )
+
+
+def call_unstructured(
+    *,
+    client: Any,
+    gtypes: Any,
+    model: str,
+    system_instruction: str,
+    contents: list[Any],
+    temperature: float = 0.3,
+) -> str:
+    """Make a free-form (no response schema) call to Gemini and return the
+    response text. Companion to ``call_structured`` for the analyze_* tools.
+
+    Used when the caller has an ad-hoc question and doesn't want to commit to
+    a fixed response taxonomy. The describe_* / score_* tools bind to a
+    Pydantic schema for repeatability; analyze_* opts out for flexibility.
+    """
+    config = gtypes.GenerateContentConfig(
+        system_instruction=system_instruction,
+        temperature=temperature,
+    )
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=config,
+    )
+    text: Optional[str] = getattr(response, "text", None)
+    if text and text.strip():
+        return text.strip()
+    raise RuntimeError(
+        "NO_RESPONSE: Gemini returned no usable text response."
+    )

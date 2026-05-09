@@ -111,16 +111,34 @@ Run the media-analysis server on stdio:
 uv run media-analysis-mcp
 ```
 
+Analysis tools:
+
+- `describe_image` / `describe_video` — structured observation against a fixed taxonomy (8 categories for images, 12 for video). No scoring, no verdict — Claude is the judge.
+- `score_image` / `score_video` — calibrated 0–100 scoring across criteria (default: the 6 dimensions from `generation-review-loop`). Gemini is the judge.
+- `analyze_image` / `analyze_video` — free-form Q&A. Pass any question; get a prose answer. Same multimodal plumbing, no response schema.
+- `compare_images` — pick the best of N candidates against criteria; returns `best_index` + reasoning.
+- `extract_visual_tokens` — deconstruct an image into reusable prompt tokens (lighting/atmosphere/palette/materials/spatial_grammar by default). Defaults to Flash.
+- `extract_video_frames` — ffmpeg-based frame extraction at custom timestamps; useful for feeding stills back into image tools.
+
+#### When to use which: `describe_*` vs `analyze_*`
+
+Both go to the same model with the same multimodal context. The difference is the *response*:
+
+- **`describe_*`** returns a fixed structured shape (8 / 12 named categories). Use when you want **repeatable, comparable** output across iterations — same axes every time, easy to diff between runs. This is the riff-loop calibration tool.
+- **`analyze_*`** returns a single prose answer to a specific question. Use when you have an **ad-hoc question** that doesn't fit the taxonomy ("how does the camera move?", "is the boy on the right's posture stable?", "rate just the lighting in 2 sentences"). No schema lock; no taxonomy decisions baked in.
+
+Rule of thumb: reach for `describe_*` first when you're in a calibrated review pass. Reach for `analyze_*` when the structured output is fighting the question you actually want to ask.
+
 Example MCP client config when the client launches from outside this repo:
 
 ```json
 {
   "mcpServers": {
-    "gemini-prompts-mcp": {
+    "gemini-prompts": {
       "command": "uv",
       "args": ["--directory", "/Users/daviddickinson/Projects/Lora/riff-mcp", "run", "gemini-prompts-mcp"]
     },
-    "media-analysis-mcp": {
+    "media-analysis": {
       "command": "uv",
       "args": ["--directory", "/Users/daviddickinson/Projects/Lora/riff-mcp", "run", "media-analysis-mcp"]
     }

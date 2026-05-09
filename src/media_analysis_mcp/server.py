@@ -29,21 +29,27 @@ mcp = FastMCP("media-analysis-mcp")
 def _build_image_contents(
     *,
     image_path: str,
-    prompt: str,
+    prompt: Optional[str],
     intent: Optional[str],
     context: Optional[str],
     base_plate_path: Optional[str],
     identity_refs: Optional[list[str]],
     style_refs: Optional[list[str]],
     image_module: Any,
+    question: Optional[str] = None,
 ) -> list[Any]:
     """Build the Gemini multimodal ``contents`` list — text labels interleaved
     with Pillow images. Order: context block → base plate → identity refs →
     style refs → target image. Each reference is preceded by a labeled string
     so the model knows the role of each image.
+
+    When ``question`` is set (analyze_image), it anchors the context block;
+    ``prompt`` becomes optional supporting context rather than required.
     """
     parts: list[Any] = [
-        prompts.context_block(prompt=prompt, intent=intent, context=context),
+        prompts.context_block(
+            prompt=prompt, intent=intent, context=context, question=question
+        ),
     ]
     if base_plate_path:
         parts.append(prompts.reference_label("base_plate") + ":")
@@ -63,16 +69,17 @@ def _build_image_contents(
 
 def _context_used(
     *,
-    prompt: str,
+    prompt: Optional[str],
     intent: Optional[str],
     context: Optional[str],
     base_plate_path: Optional[str],
     identity_refs: Optional[list[str]],
     style_refs: Optional[list[str]],
+    question: Optional[str] = None,
 ) -> dict[str, Any]:
     """Echo the inputs in the return so the agent can audit what the eval
-    had to work with."""
-    return {
+    had to work with. ``question`` is included only when set (analyze_*)."""
+    out: dict[str, Any] = {
         "prompt": prompt,
         "intent": intent,
         "context": context,
@@ -80,6 +87,9 @@ def _context_used(
         "identity_refs": list(identity_refs) if identity_refs else [],
         "style_refs": list(style_refs) if style_refs else [],
     }
+    if question is not None:
+        out["question"] = question
+    return out
 
 
 @mcp.tool()
@@ -294,11 +304,94 @@ def score_image(
     }
 
 
+@mcp.tool()
+def analyze_image(
+    image_path: str,
+    question: str,
+    prompt: Optional[str] = None,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    base_plate_path: Optional[str] = None,
+    identity_refs: Optional[list[str]] = None,
+    style_refs: Optional[list[str]] = None,
+    model: str = "gemini-3.1-pro-preview",
+    temperature: float = 0.3,
+    system_prompt: Optional[str] = None,
+) -> dict[str, Any]:
+    """Free-form image analysis. Same multimodal plumbing as describe_image,
+    but no response schema — Gemini answers ``question`` in prose.
+
+    Use when describe_image's 8-category taxonomy is too rigid or off-axis
+    for what you actually want to know. For repeatable structured
+    observation across iterations, prefer describe_image.
+
+    Args:
+        image_path: Absolute path to the image to analyze.
+        question: The agent's question for Gemini to answer.
+        prompt: Optional gen prompt that produced this image.
+        intent: Optional creative brief.
+        context: Optional per-call notes.
+        base_plate_path: Optional reference image (source plate).
+        identity_refs: Optional character/asset reference paths.
+        style_refs: Optional style anchor paths.
+        model: Gemini model id. Default ``gemini-3.1-pro-preview``.
+        temperature: 0..1. Default 0.3.
+        system_prompt: Override the default analyze-mode instruction.
+
+    Raises:
+        RuntimeError: ``IMAGE_NOT_FOUND``, ``API_KEY_MISSING``,
+        ``NO_RESPONSE``, or other coded errors.
+    """
+    if not Path(image_path).expanduser().is_file():
+        raise RuntimeError(f"IMAGE_NOT_FOUND: {image_path}")
+
+    image_module = gemini_media.require_pillow()
+    client, gtypes = gemini_media.init_client()
+
+    system_instruction = system_prompt or prompts.analyze_image_system_prompt()
+    contents = _build_image_contents(
+        image_path=image_path,
+        prompt=prompt,
+        intent=intent,
+        context=context,
+        base_plate_path=base_plate_path,
+        identity_refs=identity_refs,
+        style_refs=style_refs,
+        image_module=image_module,
+        question=question,
+    )
+
+    answer = gemini_media.call_unstructured(
+        client=client,
+        gtypes=gtypes,
+        model=model,
+        system_instruction=system_instruction,
+        contents=contents,
+        temperature=temperature,
+    )
+
+    return {
+        "model": model,
+        "image_path": str(Path(image_path).expanduser().resolve()),
+        "question": question,
+        "answer": answer,
+        "context_used": _context_used(
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            base_plate_path=base_plate_path,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+            question=question,
+        ),
+    }
+
+
 def _build_video_contents(
     *,
     video_file: Any,
     video_mime: str,
-    prompt: str,
+    prompt: Optional[str],
     intent: Optional[str],
     context: Optional[str],
     base_plate_path: Optional[str],
@@ -307,6 +400,7 @@ def _build_video_contents(
     fps: Optional[float],
     image_module: Any,
     gtypes: Any,
+    question: Optional[str] = None,
 ) -> list[Any]:
     """Build the Gemini multimodal ``contents`` list for video tools.
 
@@ -321,7 +415,9 @@ def _build_video_contents(
     set — fps-only metadata fails to apply (ImgVidCaptioner's lesson).
     """
     parts: list[Any] = [
-        prompts.context_block(prompt=prompt, intent=intent, context=context),
+        prompts.context_block(
+            prompt=prompt, intent=intent, context=context, question=question
+        ),
     ]
     if base_plate_path:
         parts.append(prompts.reference_label("base_plate") + ":")
@@ -582,6 +678,108 @@ def score_video(
             base_plate_path=base_plate_path,
             identity_refs=identity_refs,
             style_refs=style_refs,
+        ),
+    }
+
+
+@mcp.tool()
+def analyze_video(
+    video_path: str,
+    question: str,
+    prompt: Optional[str] = None,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    base_plate_path: Optional[str] = None,
+    identity_refs: Optional[list[str]] = None,
+    style_refs: Optional[list[str]] = None,
+    fps: Optional[float] = None,
+    model: str = "gemini-3.1-pro-preview",
+    temperature: float = 0.3,
+    system_prompt: Optional[str] = None,
+    upload_timeout_s: int = 300,
+) -> dict[str, Any]:
+    """Free-form video analysis. Same Files API plumbing as describe_video,
+    but no response schema — Gemini answers ``question`` in prose.
+
+    Use when describe_video's 12-category taxonomy is too rigid or off-axis
+    for what you actually want to know (e.g., "how does the camera move
+    in the second half?", "is the boy on the right's posture stable?").
+    For repeatable structured observation, prefer describe_video.
+
+    Args:
+        video_path: Absolute path to the video file (.mp4 / .mov / .webm).
+        question: The agent's question for Gemini to answer.
+        prompt: Optional gen prompt that produced this video.
+        intent: Optional creative brief.
+        context: Optional per-call notes.
+        base_plate_path: Optional reference frame.
+        identity_refs: Optional character/asset reference paths.
+        style_refs: Optional style anchor paths.
+        fps: Sampling rate Gemini uses when reading the video. Default
+            None lets Gemini pick (typically 1 fps).
+        model: Gemini model id. Default ``gemini-3.1-pro-preview``.
+        temperature: 0..1. Default 0.3.
+        system_prompt: Override the default analyze-mode instruction.
+        upload_timeout_s: Bounds the Files API upload+process wait.
+
+    Raises:
+        RuntimeError: ``VIDEO_NOT_FOUND``, ``VIDEO_UPLOAD_FAILED``,
+        ``VIDEO_PROCESSING_TIMEOUT``, ``VIDEO_PROCESSING_FAILED``,
+        ``API_KEY_MISSING``, ``INVALID_INPUT``, or ``NO_RESPONSE``.
+    """
+    if not Path(video_path).expanduser().is_file():
+        raise RuntimeError(f"VIDEO_NOT_FOUND: {video_path}")
+    _validate_fps(fps)
+
+    image_module = gemini_media.require_pillow()
+    client, gtypes = gemini_media.init_client()
+    video_mime = gemini_media.video_mime_type(video_path)
+
+    uploaded = gemini_media.upload_and_poll_video(
+        client, video_path, timeout_s=upload_timeout_s
+    )
+    try:
+        system_instruction = system_prompt or prompts.analyze_video_system_prompt()
+        contents = _build_video_contents(
+            video_file=uploaded,
+            video_mime=video_mime,
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            base_plate_path=base_plate_path,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+            fps=fps,
+            image_module=image_module,
+            gtypes=gtypes,
+            question=question,
+        )
+
+        answer = gemini_media.call_unstructured(
+            client=client,
+            gtypes=gtypes,
+            model=model,
+            system_instruction=system_instruction,
+            contents=contents,
+            temperature=temperature,
+        )
+    finally:
+        gemini_media.cleanup_uploaded(client, uploaded)
+
+    return {
+        "model": model,
+        "video_path": str(Path(video_path).expanduser().resolve()),
+        "fps": fps,
+        "question": question,
+        "answer": answer,
+        "context_used": _context_used(
+            prompt=prompt,
+            intent=intent,
+            context=context,
+            base_plate_path=base_plate_path,
+            identity_refs=identity_refs,
+            style_refs=style_refs,
+            question=question,
         ),
     }
 
