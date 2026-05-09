@@ -2,7 +2,7 @@
 
 What we learned by running the tools end-to-end during the v1 build. Everything here is grounded in actual API calls against real artifacts; nothing is hypothetical. The code itself, design doc, and git log capture *what we built*; this captures *how it behaves in practice* and *where the rough edges are*.
 
-Updated 2026-05-08, immediately after Step 8 closed out v1.
+Updated 2026-05-08, immediately after Step 8 closed out v1; extended same day with the live Seedance fire (v2 item #1).
 
 ---
 
@@ -15,7 +15,8 @@ Updated 2026-05-08, immediately after Step 8 closed out v1.
 | Bridge video (.mp4, 3MB, 720p, ~5s, known camera cut at ~4.1s) | `~/Downloads/bridge_attempt_wimageref_badcameracut.mp4` (not in repo) | `describe_video` + `score_video` at fps=12 (Step 6 + FPS feature), `extract_video_frames` (Step 7), `compare_images` on extracted frames (Step 8) |
 | Bridge cut-bracket frames | `~/Downloads/frames/bridge_attempt_wimageref_badcameracut_t{03.500,04.000,04.083,04.167,04.500}.png` | `compare_images` (Step 8) |
 
-No live Seedance generation has been fired yet — Step 3's `generate_video` was verified only via the 15-case dry_run matrix. Live fire would close that loop (~$0.30, 1–3 min).
+| Grothendieck seed-cluster PNG (pen-and-ink, 1403×1121, ~5:4) | `local/Images/Grothendieck/ChatGPT Image May 8, 2026, 06_15_10 PM.png` | `generate_video` (Seedance live fire, v2 #1) |
+| Seedance fire output (.mp4, 1112×834, 5.04s, 24fps) | `out/2026-05-08/bytedanceseedance-20/01_seedance-fire-grothendieck-seed-cluster_5b943597/seedance-fire-grothendieck-seed-cluster_00.mp4` | `describe_video` + `extract_video_frames` (closing the riff loop on the fire) |
 
 ---
 
@@ -28,12 +29,17 @@ No live Seedance generation has been fired yet — Step 3's `generate_video` was
 - **Output dir layout**: `<out_root>/<today>/<model_slug>/<seq>_<title>_<hash>/<title>_NN.png` is honored by both CLI and MCP paths.
 - Latency: ~30s for a single 1024×1024 1:1 default-temp image on `gemini-3-pro-image-preview`.
 
-### `generate_video` (Step 3)
+### `generate_video` (Step 3) — **live-fired 2026-05-08**
 
-- **Not yet live-verified**. 15-case dry_run matrix proves input handling: mode discrimination (text_to_video / first_last_frames / omni_reference), all 7 hard-validation paths (mut.ex., per-type caps, range, enum, anchor), 2 soft-warning paths (12-cap, prompt-token mismatch), edge values (duration=-1, aspect=adaptive).
-- **`derive_mode` broadened in the v2 fix round** — now returns `omni_reference` for any reference type set, not just `reference_images`. Was caught by codex review of Step 6 (commit `b8b9f8f`).
-- **Thread-watchdog timeout** verified via mock: 2s timeout against a 30s-sleep stub returns in 2.01s with `REPLICATE_TIMEOUT` raised (commit `b8b9f8f`).
-- **Coded-prefix preservation** verified via mock: `REPLICATE_TIMEOUT` reaches caller as `REPLICATE_TIMEOUT:` not `REPLICATE_ERROR: REPLICATE_TIMEOUT:` (commit `f928bc1`).
+- **Live fire succeeded** on the Grothendieck seed-cluster PNG. 5s, 720p, 4:3, `first_last_frames` mode. End-to-end **153.9s** (cold start; predict_time 153.3s, download 0.35s). Output: 3.1MB h.264 mp4, 1112×834, 24fps, 5.04s. Sidecar `job.json` and `media_info` populated correctly via ffprobe.
+- **Latent `_get_url` bug surfaced** — file saved as `.bin` instead of `.mp4`. Root cause: `_get_url` only handled callable `url()` (DMPOST31's older Replicate SDK shape), but modern `FileOutput` exposes `.url` as a string property. We silently fell through to `None`, then `_ext_from_url(None) → ".bin"`. Fixed: now handles both callable and string-attribute forms (additional dict-form handling pre-staged by separate work). The `.bin` content was a valid mp4 throughout — failure was *graceful*, which is exactly why it didn't surface in dry-run / import / mock testing.
+- **Style-preservation result is the surprise**. Pen-and-ink line work held *perfectly* across all 121 frames, white background stayed clean, no boiling, no drift to photorealism. This is the opposite of what I expected — pixel art and pen-and-ink were both predicted to be hard for Seedance, but pen-and-ink turned out to be the easier case (perhaps because illustrated white-bg has unambiguous "this is a drawing" signal).
+- **Motion interpretation**: Seedance treated the figures as *part of the still drawing* and only animated what the prompt explicitly named as moving (the seed pulse, the drifting puffs). Children + background figure: zero motion. Worth understanding as a *bias to leverage*, not a bug — when style preservation matters, framing the prompt as "the [styled] image, with the [specific element] doing [specific action]" gets you locked-style + targeted motion.
+- **Color drift** — the prompted "warm yellow-white glow" drifted toward orange/red over the 5s. Subtle, not catastrophic. Color stability is a separate axis from style stability and worth tracking in v2 calibration.
+- **Anatomy artifacts at t=0 are source-frame issues, not Seedance issues** — the elongated boy and faceless background man are present in the ChatGPT-generated source. Seedance faithfully propagated them. Calibration needs to distinguish "Seedance drift" from "Seedance faithful reproduction of source flaws."
+- **Soft warning false positive**: the `[Image1] not in prompt` warning fires for `first_last_frames` mode where the image's role is implicit. v2 polish — `check_prompt_references` should be mode-aware and skip first/last-frame entries.
+- **15-case dry_run matrix from v1 still holds** — mode discrimination, hard validation, soft warnings, edge values all verified pre-fire.
+- **Thread-watchdog and coded-prefix preservation** untriggered by this fire (no timeout, no error path) — those mock-verified guarantees still apply.
 
 ### `describe_image` (Step 5)
 
@@ -117,8 +123,9 @@ Five rounds of codex review across the project found small-but-real bugs that st
 | Step 6 review (2) | Coded error prefixes lost at MCP boundary (`REPLICATE_TIMEOUT` → `REPLICATE_ERROR: REPLICATE_TIMEOUT:`) → commit `f928bc1` |
 | Step 6 review (3) | FAILED upload not cleaned up; `fps=True` accepted as 1 (bool subclasses int); `context_block` said "image" reused for video → commit `21cdce0` |
 | Implicit Step 8 | `compare_images` cross-image grounding caveat documented in docstring (no commit needed beyond the original Step 8 commit) |
+| Live Seedance fire (v2 #1) | `_get_url` only handled callable `url()` — modern `FileOutput.url` is a string property, so outputs were silently saved as `.bin` instead of `.mp4` (file content remained valid mp4 throughout — graceful failure mode that none of the static / mock / import tests would catch) |
 
-**Lesson for v2**: every adapter wrapping an external service deserves at least one "what happens when the service misbehaves" review pass. Static review surfaces structural issues; live testing surfaces behavioral issues; codex's pattern of "mock the failure mode and see what the boundary does" caught the latent bugs both other layers missed.
+**Lesson for v2**: every adapter wrapping an external service deserves at least one "what happens when the service misbehaves" review pass *and* at least one "what happens with real bytes flowing through real shapes" live pass. Static review surfaces structural issues; mock testing surfaces failure-mode handling; live fire surfaces shape-evolution drift between vendored code and current SDK shapes. The `.bin` bug is the canonical example — invisible to all three of (a) reading the code, (b) mocking the bad path, (c) running dry-runs — only surfaces when real Replicate `FileOutput` flows in.
 
 ---
 
@@ -132,7 +139,7 @@ Five rounds of codex review across the project found small-but-real bugs that st
 | `compare_images` on Pro, 2 candidates | ~30s | ~$0.10 |
 | `extract_visual_tokens` on Flash | ~10–15s | ~$0.01 |
 | `extract_video_frames` (ffmpeg, 5 timestamps) | <1s | $0 |
-| `generate_video` on Seedance (not yet fired) | ~1–3 min predicted | ~$0.30 (5s clip @720p) |
+| `generate_video` on Seedance (live, cold start, 5s @720p, 4:3) | **153.9s actual** (predict 153.3s, download 0.35s) | ~$0.30 actual |
 
 Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient for `extract_visual_tokens`. Worth piloting Flash on `describe_image` for a few rounds to see if it holds the eight-category quality bar — would cut analysis cost ~5×.
 
@@ -142,7 +149,8 @@ Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient 
 
 (These extend the design doc's "Future / v2" list with concrete items surfaced during verification.)
 
-1. **Live Seedance fire** — close the loop on Step 3. ~$0.30 for a real 5s 720p clip; would also exercise the Replicate `_run_with_timeout` code path against real latency, not a mocked 30s sleep.
+1. ~~**Live Seedance fire**~~ ✅ done 2026-05-08 — surfaced the `_get_url` shape-drift bug, validated cold-start latency (~154s), characterized Seedance's pen-and-ink preservation behavior. See `generate_video` per-tool section above.
+1a. **Suppress `[Image1] not in prompt` warning for `first_last_frames` mode** — false positive when image role is implicit. `seedance.check_prompt_references` should accept a `mode` param and skip FIRST_FRAME / LAST_FRAME entries.
 2. **`.mcp.json` wiring** — both servers (`gemini-prompts-mcp`, `media-analysis-mcp`) only invokable via direct Python today. Wiring into Claude Code's MCP config is the next operational step before agents can use them natively.
 3. **Flash trial for `describe_image`** — Pro is the safe default; Flash *may* be sufficient for routine description, with ~5× cost reduction. Worth ~5 paired calls to see if the eight categories hold quality.
 4. **`compare_images` mitigation** — current docstring caveat is the v1 fix. v2 ideas: (a) two-pass workflow that calls `describe_image` per candidate first, then asks Pro to reason across the descriptions (not the images); (b) explicit "verify which image you're describing" step in the system prompt.
@@ -160,3 +168,6 @@ Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient 
 - Extracted bridge frames: `~/Downloads/frames/`
 - v13 PNG: `out/2026-05-07/gemini-3-pro-image-preview/01_sc04-v13-wide-establishing-test_3ec0da36/sc04-v13-wide-establishing-test_01.png`
 - Apple PNG: `out/2026-05-08/gemini-3-pro-image-preview/01_step-2-real-fire-test_ed6bb7e4/step-2-real-fire-test_01.png`
+- Grothendieck source PNG: `local/Images/Grothendieck/ChatGPT Image May 8, 2026, 06_15_10 PM.png`
+- Seedance fire output: `out/2026-05-08/bytedanceseedance-20/01_seedance-fire-grothendieck-seed-cluster_5b943597/seedance-fire-grothendieck-seed-cluster_00.mp4`
+- Seedance fire frames: same dir, `frames/seedance-fire-grothendieck-seed-cluster_00_t{00.000,02.500,04.900}.png`
