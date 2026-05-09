@@ -54,16 +54,23 @@ def derive_mode(
     *,
     image: Optional[str],
     reference_images: Optional[list[str]],
+    reference_videos: Optional[list[str]] = None,
+    reference_audios: Optional[list[str]] = None,
 ) -> str:
     """Return the named Seedance mode.
 
     Per ``seedance-prompting-guide.md:25``: ``text_to_video`` |
-    ``first_last_frames`` | ``omni_reference``. Reference videos / audios
-    can layer on any mode and don't change the discriminator.
+    ``first_last_frames`` | ``omni_reference``. ``omni_reference`` is
+    broadened here to "any reference type set" so the mode discriminator
+    always answers the agent's actual question — "is this pure text or are
+    there refs to manage?" — even for reference-videos-only or reference-
+    audios-only calls. The seedance guide's narrower definition (refs are
+    images) is preserved in ``references[].role``, which carries the exact
+    type per uploaded asset.
     """
     if image is not None:
         return "first_last_frames"
-    if reference_images:
+    if reference_images or reference_videos or reference_audios:
         return "omni_reference"
     return "text_to_video"
 

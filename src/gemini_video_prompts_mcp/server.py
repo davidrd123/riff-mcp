@@ -25,6 +25,7 @@ from gemini_video_prompts.cli import (
     resolve_output_root,
     slugify,
     summarize_job,
+    write_json,
 )
 
 from . import seedance
@@ -259,7 +260,12 @@ def generate_video(
         reference_videos=reference_videos,
         reference_audios=reference_audios,
     )
-    mode = seedance.derive_mode(image=image, reference_images=reference_images)
+    mode = seedance.derive_mode(
+        image=image,
+        reference_images=reference_images,
+        reference_videos=reference_videos,
+        reference_audios=reference_audios,
+    )
 
     # Soft warnings (non-blocking)
     validation_warnings: list[str] = []
@@ -336,7 +342,7 @@ def generate_video(
         out_clean["media_info"] = seedance.probe_media_info(out_clean["path"])
         enriched_outputs.append(out_clean)
 
-    return {
+    result = {
         "status": "ok",
         "created_at": now_iso(),
         "started_at": started_at,
@@ -350,8 +356,13 @@ def generate_video(
         "validation_warnings": validation_warnings,
         "job_dir": str(job_dir),
         "outputs": enriched_outputs,
-        "metrics": sidecar.get("metrics", {}),
+        "metrics": {
+            **sidecar.get("metrics", {}),
+            "cold_start": sidecar.get("cold_start"),
+        },
     }
+    write_json(job_dir / "job.json", result)
+    return result
 
 
 def main() -> None:

@@ -1,8 +1,21 @@
 """Minimal Replicate helper functions for the gemini-prompts-mcp video tool.
 
 Vendored from DMPOST31 (``ae-mcp-dmpost/dmpost-gemini-mcp/vendor/replicate_min.py``)
-with one local edit to ``_ext_from_url`` to allow video container extensions
-(``.mp4``, ``.mov``, ``.webm``).
+with two local deviations:
+
+1. ``_ext_from_url`` allows video container extensions (``.mp4``, ``.mov``,
+   ``.webm``) in addition to the original image/zip set.
+2. ``generate()`` enforces a hard wall-clock timeout via a daemon thread
+   watchdog (``_run_with_timeout``). The upstream pattern called
+   ``replicate.run(..., wait=N)``, but ``wait`` only bounds the *initial*
+   sync wait window — ``replicate.run`` then falls through to an unbounded
+   ``prediction.wait()`` that can hang indefinitely on a stuck prediction.
+   The watchdog bounds the caller's wait time at the cost of leaking the
+   worker thread (it keeps polling Replicate until the prediction completes
+   or Replicate's server-side timeout fires). Threads are daemon so they
+   die with the process. For tighter control (server-side cancel on
+   timeout), use ``predictions.create`` + manual poll + ``cancel()`` —
+   deferred until the leak proves observable.
 
 Notes:
 - Module is intentionally small and runtime-guarded (``replicate`` may not be
@@ -15,6 +28,7 @@ Notes:
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -110,6 +124,38 @@ def _write_outputs(items: Iterable[Any], out_dir: Path, base_name: str) -> List[
     return outputs
 
 
+def _run_with_timeout(model_ref: str, params: dict, *, timeout_s: int) -> Any:
+    """Run ``replicate.run`` in a daemon thread bounded by ``timeout_s``.
+
+    Returns the file list on success. Raises ``RuntimeError`` with a
+    ``REPLICATE_TIMEOUT`` prefix when the worker thread is still alive after
+    the timeout. The thread keeps polling Replicate after we return — see
+    the module docstring for the trade-off.
+    """
+    result_holder: Dict[str, Any] = {}
+    exception_holder: List[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            result_holder["files"] = replicate.run(model_ref, input=params)
+        except BaseException as exc:  # noqa: BLE001 — re-raised in caller
+            exception_holder.append(exc)
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout_s)
+
+    if worker.is_alive():
+        raise RuntimeError(
+            f"REPLICATE_TIMEOUT: prediction did not complete within "
+            f"{timeout_s}s; daemon thread continues polling but caller "
+            f"received timeout."
+        )
+    if exception_holder:
+        raise exception_holder[0]
+    return result_holder["files"]
+
+
 def generate(
     *,
     model_ref: str,
@@ -119,7 +165,7 @@ def generate(
     timeout_s: int = 300,
     context: Optional[dict] = None,
 ) -> ImageJobResult:
-    """Minimal wrapper around ``replicate.run``.
+    """Wrap ``replicate.run`` with a hard wall-clock timeout.
 
     Blocking. Downloads outputs, returns a sidecar dict. Caller is responsible
     for sanitizing ``params`` if they may contain file handles — this function
@@ -135,14 +181,7 @@ def generate(
 
     try:
         t_predict_start = time.perf_counter()
-        wait_s = min(timeout_s, 60)
-        try:
-            files = replicate.run(model_ref, input=params, wait=wait_s)
-        except TypeError:
-            try:
-                files = replicate.run(model_ref, input=params, timeout=timeout_s)  # type: ignore[call-arg]
-            except TypeError:
-                files = replicate.run(model_ref, input=params)
+        files = _run_with_timeout(model_ref, params, timeout_s=timeout_s)
         t_predict = time.perf_counter() - t_predict_start
 
         if not isinstance(files, (list, tuple)):
