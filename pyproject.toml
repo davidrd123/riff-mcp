@@ -18,6 +18,7 @@ dependencies = [
 gemini-video-prompts = "gemini_video_prompts.cli:main"
 gemini-prompts-mcp = "gemini_video_prompts_mcp.server:main"
 media-analysis-mcp = "media_analysis_mcp.server:main"
+riff-mcp-doctor = "riff_mcp_doctor.doctor:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -28,6 +29,7 @@ packages = [
   "src/gemini_video_prompts",
   "src/gemini_video_prompts_mcp",
   "src/media_analysis_mcp",
+  "src/riff_mcp_doctor",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -35,9 +37,11 @@ include = [
   "src/gemini_video_prompts",
   "src/gemini_video_prompts_mcp",
   "src/media_analysis_mcp",
+  "src/riff_mcp_doctor",
   "pyproject.toml",
   "README.md",
   ".env.example",
+  ".mcp.example.json",
   "prompts",
 ]
 

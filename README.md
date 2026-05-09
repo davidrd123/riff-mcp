@@ -128,9 +128,25 @@ Example MCP client config when the client launches from outside this repo:
 }
 ```
 
+A copy-paste-ready template lives at `.mcp.example.json` — replace `REPO_PATH`
+with this directory and fill the env values to use it directly.
+
 Running with `--directory` lets the servers find the repo-local `.env`. You can
 also provide `GEMINI_API_KEY` and `REPLICATE_API_TOKEN` directly through the MCP
 client's environment settings.
+
+### Diagnose with `riff-mcp-doctor`
+
+Before wiring the MCP servers (or after a "tool not working" report), run:
+
+```bash
+uv run riff-mcp-doctor          # env vars, Python packages, ffmpeg/ffprobe
+uv run riff-mcp-doctor --network  # plus a cheap Gemini + Replicate auth check
+uv run riff-mcp-doctor --json     # machine-readable output for scripts
+```
+
+Exits non-zero on any required failure. Network checks are skipped (not failed)
+when their corresponding token is unset.
 
 ## Defaults
 

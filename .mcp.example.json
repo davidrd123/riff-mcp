@@ -1,0 +1,30 @@
+{
+  "_comment": "Example Claude Code MCP server config for riff-mcp. Copy to ~/.claude/mcp.json (or merge into the existing file) and replace REPO_PATH + env values. See README for details.",
+  "mcpServers": {
+    "gemini-prompts": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "REPO_PATH",
+        "run",
+        "gemini-prompts-mcp"
+      ],
+      "env": {
+        "GEMINI_API_KEY": "",
+        "REPLICATE_API_TOKEN": ""
+      }
+    },
+    "media-analysis": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "REPO_PATH",
+        "run",
+        "media-analysis-mcp"
+      ],
+      "env": {
+        "GEMINI_API_KEY": ""
+      }
+    }
+  }
+}
