@@ -304,6 +304,7 @@ def _build_video_contents(
     base_plate_path: Optional[str],
     identity_refs: Optional[list[str]],
     style_refs: Optional[list[str]],
+    fps: Optional[float],
     image_module: Any,
     gtypes: Any,
 ) -> list[Any]:
@@ -313,6 +314,11 @@ def _build_video_contents(
     Files API video object passed via ``gtypes.FileData``. Reference images
     (base_plate / identity_refs / style_refs) are still passed inline as
     Pillow Images — Gemini handles mixed image+video contents lists.
+
+    When ``fps`` is set, attaches ``VideoMetadata`` to the video Part so
+    Gemini samples that many frames per second instead of its default (1).
+    The ``start_offset='0s'`` is required by the SDK whenever ``fps`` is
+    set — fps-only metadata fails to apply (ImgVidCaptioner's lesson).
     """
     parts: list[Any] = [
         prompts.context_block(prompt=prompt, intent=intent, context=context),
@@ -329,10 +335,29 @@ def _build_video_contents(
             parts.append(prompts.reference_label("style_ref", idx) + ":")
             parts.append(gemini_media.load_image(ref, image_module=image_module))
     parts.append("OUTPUT VIDEO to evaluate:")
-    parts.append(
-        gtypes.Part(file_data=gtypes.FileData(file_uri=video_file.uri, mime_type=video_mime))
-    )
+
+    part_kwargs: dict[str, Any] = {
+        "file_data": gtypes.FileData(file_uri=video_file.uri, mime_type=video_mime),
+    }
+    if fps is not None:
+        # SDK accepts int when fps is whole-number; pass float otherwise.
+        fps_value = int(fps) if fps == int(fps) else fps
+        part_kwargs["video_metadata"] = gtypes.VideoMetadata(
+            fps=fps_value, start_offset="0s"
+        )
+    parts.append(gtypes.Part(**part_kwargs))
     return parts
+
+
+def _validate_fps(fps: Optional[float]) -> None:
+    """Range-check fps (caller passes None when unspecified). Raises
+    ``INVALID_INPUT`` for values outside (0, 24]."""
+    if fps is None:
+        return
+    if not isinstance(fps, (int, float)) or fps <= 0.0 or fps > 24.0:
+        raise RuntimeError(
+            f"INVALID_INPUT: fps must be a number in (0, 24] (got {fps!r})"
+        )
 
 
 @mcp.tool()
@@ -344,6 +369,7 @@ def describe_video(
     base_plate_path: Optional[str] = None,
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
+    fps: Optional[float] = None,
     model: str = "gemini-3.1-pro-preview",
     temperature: float = 0.3,
     system_prompt: Optional[str] = None,
@@ -383,6 +409,7 @@ def describe_video(
     """
     if not Path(video_path).expanduser().is_file():
         raise RuntimeError(f"VIDEO_NOT_FOUND: {video_path}")
+    _validate_fps(fps)
 
     image_module = gemini_media.require_pillow()
     client, gtypes = gemini_media.init_client()
@@ -402,6 +429,7 @@ def describe_video(
             base_plate_path=base_plate_path,
             identity_refs=identity_refs,
             style_refs=style_refs,
+            fps=fps,
             image_module=image_module,
             gtypes=gtypes,
         )
@@ -421,6 +449,7 @@ def describe_video(
     return {
         "model": model,
         "video_path": str(Path(video_path).expanduser().resolve()),
+        "fps": fps,
         "observations": parsed.observations.model_dump(),
         "freeform_observations": parsed.freeform_observations,
         "context_used": _context_used(
@@ -444,6 +473,7 @@ def score_video(
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
     criteria: Optional[list[str]] = None,
+    fps: Optional[float] = None,
     model: str = "gemini-3.1-pro-preview",
     temperature: float = 0.3,
     system_prompt: Optional[str] = None,
@@ -465,6 +495,7 @@ def score_video(
     """
     if not Path(video_path).expanduser().is_file():
         raise RuntimeError(f"VIDEO_NOT_FOUND: {video_path}")
+    _validate_fps(fps)
 
     criteria_list = list(criteria) if criteria else list(prompts.SIX_DIMENSIONS)
 
@@ -488,6 +519,7 @@ def score_video(
             base_plate_path=base_plate_path,
             identity_refs=identity_refs,
             style_refs=style_refs,
+            fps=fps,
             image_module=image_module,
             gtypes=gtypes,
         )
@@ -533,6 +565,7 @@ def score_video(
     return {
         "model": model,
         "video_path": str(Path(video_path).expanduser().resolve()),
+        "fps": fps,
         "evaluations": evaluations_dict,
         "summary": parsed.summary,
         "decision_hint": parsed.decision_hint,
