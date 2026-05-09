@@ -104,6 +104,11 @@ def test_analyze_video_errors_on_missing_file(tmp_path: Path) -> None:
         server.analyze_video(video_path=str(bogus), question="anything")
 
 
+def test_analyze_video_rejects_blank_question(video_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="^INVALID_INPUT: question is required"):
+        server.analyze_video(video_path=str(video_path), question="\t\n")
+
+
 def test_analyze_video_cleanup_runs_on_call_failure(
     monkeypatch: pytest.MonkeyPatch, video_path: Path
 ) -> None:

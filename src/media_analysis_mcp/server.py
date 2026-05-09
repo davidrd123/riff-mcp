@@ -92,6 +92,13 @@ def _context_used(
     return out
 
 
+def _normalize_question(question: str) -> str:
+    """Return a stripped analyze_* question or raise a coded input error."""
+    if not isinstance(question, str) or not question.strip():
+        raise RuntimeError("INVALID_INPUT: question is required.")
+    return question.strip()
+
+
 @mcp.tool()
 def describe_image(
     image_path: str,
@@ -342,6 +349,7 @@ def analyze_image(
         RuntimeError: ``IMAGE_NOT_FOUND``, ``API_KEY_MISSING``,
         ``NO_RESPONSE``, or other coded errors.
     """
+    question_text = _normalize_question(question)
     if not Path(image_path).expanduser().is_file():
         raise RuntimeError(f"IMAGE_NOT_FOUND: {image_path}")
 
@@ -358,7 +366,7 @@ def analyze_image(
         identity_refs=identity_refs,
         style_refs=style_refs,
         image_module=image_module,
-        question=question,
+        question=question_text,
     )
 
     answer = gemini_media.call_unstructured(
@@ -373,7 +381,7 @@ def analyze_image(
     return {
         "model": model,
         "image_path": str(Path(image_path).expanduser().resolve()),
-        "question": question,
+        "question": question_text,
         "answer": answer,
         "context_used": _context_used(
             prompt=prompt,
@@ -382,7 +390,7 @@ def analyze_image(
             base_plate_path=base_plate_path,
             identity_refs=identity_refs,
             style_refs=style_refs,
-            question=question,
+            question=question_text,
         ),
     }
 
@@ -727,6 +735,7 @@ def analyze_video(
         ``VIDEO_PROCESSING_TIMEOUT``, ``VIDEO_PROCESSING_FAILED``,
         ``API_KEY_MISSING``, ``INVALID_INPUT``, or ``NO_RESPONSE``.
     """
+    question_text = _normalize_question(question)
     if not Path(video_path).expanduser().is_file():
         raise RuntimeError(f"VIDEO_NOT_FOUND: {video_path}")
     _validate_fps(fps)
@@ -752,7 +761,7 @@ def analyze_video(
             fps=fps,
             image_module=image_module,
             gtypes=gtypes,
-            question=question,
+            question=question_text,
         )
 
         answer = gemini_media.call_unstructured(
@@ -770,7 +779,7 @@ def analyze_video(
         "model": model,
         "video_path": str(Path(video_path).expanduser().resolve()),
         "fps": fps,
-        "question": question,
+        "question": question_text,
         "answer": answer,
         "context_used": _context_used(
             prompt=prompt,
@@ -779,7 +788,7 @@ def analyze_video(
             base_plate_path=base_plate_path,
             identity_refs=identity_refs,
             style_refs=style_refs,
-            question=question,
+            question=question_text,
         ),
     }
 

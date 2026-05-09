@@ -176,3 +176,8 @@ def test_analyze_image_errors_on_missing_file(tmp_path: Path) -> None:
     bogus = tmp_path / "not-here.png"
     with pytest.raises(RuntimeError, match="^IMAGE_NOT_FOUND:"):
         server.analyze_image(image_path=str(bogus), question="anything")
+
+
+def test_analyze_image_rejects_blank_question(image_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="^INVALID_INPUT: question is required"):
+        server.analyze_image(image_path=str(image_path), question="   ")
