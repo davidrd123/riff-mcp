@@ -9,6 +9,7 @@ See MCP_DESIGN.md at the repo root for the full architecture.
 from __future__ import annotations
 
 import datetime as dt
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +34,11 @@ from .seedance import SEEDANCE_MODEL_DEFAULT
 
 
 mcp = FastMCP("gemini-prompts-mcp")
+
+# Match a leading "CODE:" prefix in error messages so we can preserve already-
+# coded errors at the MCP boundary (e.g. REPLICATE_TIMEOUT from the watchdog)
+# instead of double-wrapping them as REPLICATE_ERROR: REPLICATE_TIMEOUT: ...
+_CODED_PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9_]+:")
 
 
 def _project_job_dir(job: dict[str, Any]) -> str:
@@ -330,8 +336,14 @@ def generate_video(
 
     if not sidecar.get("success"):
         err = sidecar.get("error") or {}
-        msg = err.get("message") if isinstance(err, dict) else None
-        raise RuntimeError(f"REPLICATE_ERROR: {msg or 'unknown error'}")
+        msg = (err.get("message") if isinstance(err, dict) else None) or "unknown error"
+        # Preserve coded prefixes from the underlying call (e.g.,
+        # REPLICATE_TIMEOUT from _run_with_timeout, REPLICATE_NOT_INSTALLED
+        # from _ensure_replicate). Wrap only when the message doesn't already
+        # carry a CODE: prefix.
+        if _CODED_PREFIX_RE.match(msg):
+            raise RuntimeError(msg)
+        raise RuntimeError(f"REPLICATE_ERROR: {msg}")
 
     # Enrich each output with ffprobe-derived media_info; strip internal _metrics
     enriched_outputs: list[dict[str, Any]] = []
