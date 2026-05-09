@@ -1,6 +1,6 @@
 # MCP Layer — Design
 
-**Status:** Draft, pre-implementation — v7
+**Status:** v1 implemented through Step 8 — v7 design record
 **Author:** David Dickinson + Claude
 **Last updated:** 2026-05-08
 
@@ -766,17 +766,17 @@ Tracking method: log MCP calls to a side-file with `mode`, `decision_hint` (when
 
 | # | Step | Verify by |
 |---|------|-----------|
-| 0 | Refactor `cli.py`: extract `build_resolved_image_job()`. CLI inline-mode branch (`cli.py:826-869`) collapses to a single helper call. | Existing CLI inline run produces byte-identical output. |
-| 1 | Scaffold MCP #1 package; `pyproject.toml` updates per the diff above. | `uv run gemini-prompts-mcp` starts cleanly on stdio. |
-| 2 | Implement `generate_image` (Gemini path). | Wire into Claude Code's `.mcp.json`, fire today's v13 prompt via the MCP, compare output to direct CLI run. |
-| 3 | Copy `replicate_min.py`, edit `_ext_from_url`. Implement `seedance.py` (`build_seedance_video_params`, `derive_mode`, `build_references_map`, `check_prompt_references`, `run_seedance_job`). Implement `generate_video` calling into `seedance.py`. Add `ffprobe` `media_info` probe. | Smoke test with a known-good Seedance prompt + start frame. Inspect job_dir, manifest, references map, media_info, validation_warnings. |
-| 4 | Scaffold MCP #2 as a sibling package at `src/media_analysis_mcp/` inside the existing repo. Add `pydantic` to deps and `media-analysis-mcp` console script + Hatch packaging. | `uv run media-analysis-mcp` starts on stdio. |
-| 5 | Implement `gemini_media.py` (image load, video upload+poll). Implement `prompts.py` (describe / score / token templates). Implement `describe_image` and `score_image` with default criteria. | Pipe today's v13 PNG through both tools, compare outputs to my hand-written eval from this session. A/B note. |
-| 6 | Implement `describe_video` and `score_video`. | Pipe a known Seedance .mp4 through both. Compare to manual eval. |
-| 7 | Implement `ffmpeg_utils.py` and `extract_video_frames`. | Verify timestamp precision against a video with a known cut at 2.5s. |
-| 8 | Implement `compare_images` and `extract_visual_tokens`. | Round-trip: `generate_image` → `describe_image` (or `score_image`) → `extract_visual_tokens` → seed a new genesis prompt. |
+| 0 | Refactor `cli.py`: extract `build_resolved_image_job()`. CLI inline-mode branch (`cli.py:826-869`) collapses to a single helper call. | **Done.** Existing CLI inline path and MCP image generation share the helper. |
+| 1 | Scaffold MCP #1 package; `pyproject.toml` updates per the diff above. | **Done.** `gemini-prompts-mcp` console script is registered. |
+| 2 | Implement `generate_image` (Gemini path). | **Done.** Reuses the resolved image worker path. |
+| 3 | Copy `replicate_min.py`, edit `_ext_from_url`. Implement `seedance.py` (`build_seedance_video_params`, `derive_mode`, `build_references_map`, `check_prompt_references`, `run_seedance_job`). Implement `generate_video` calling into `seedance.py`. Add `ffprobe` `media_info` probe. | **Done.** Unit coverage exercises dry-run modes, validation, coded errors, sidecar writing, and cold-start metrics. |
+| 4 | Scaffold MCP #2 as a sibling package at `src/media_analysis_mcp/` inside the existing repo. Add `pydantic` to deps and `media-analysis-mcp` console script + Hatch packaging. | **Done.** `media-analysis-mcp` console script is registered. |
+| 5 | Implement `gemini_media.py` (image load, video upload+poll). Implement `prompts.py` (describe / score / token templates). Implement `describe_image` and `score_image` with default criteria. | **Done.** Unit coverage exercises image describe/score contract and schema-mismatch rejection. |
+| 6 | Implement `describe_video` and `score_video`. | **Done.** |
+| 7 | Implement `ffmpeg_utils.py` and `extract_video_frames`. | **Done.** |
+| 8 | Implement `compare_images` and `extract_visual_tokens`. | **Done.** |
 
-Step 0 is small but critical — without it, Step 2 has to fake CLI internals. Step 2 remains the natural pause point: once the MCP `generate_image` matches the CLI byte-for-byte, the rest is repetition of the pattern.
+Step 0 was the critical unlock: without it, Step 2 would have had to fake CLI internals. With Step 8 complete, this table now records the v1 implementation boundary rather than an active build queue.
 
 ---
 
@@ -787,7 +787,7 @@ Step 0 is small but critical — without it, Step 2 has to fake CLI internals. S
 | 1 | Sibling package layout vs. separate repo for MCP #1 | **Closed** — sibling |
 | 2 | One gen MCP vs. split image/video | **Closed** — one |
 | 3 | Seedance default | **Closed** — `bytedance/seedance-2.0` |
-| 4 | Whether `generate_video` blocks or returns `prediction_id` | **Open** — block in v1 |
+| 4 | Whether `generate_video` blocks or returns `prediction_id` | **Closed for v1** — block until completion or timeout |
 | 5 | `decision_hint` opinionated or omit | **Closed** — include, advisory-only |
 | 6 | Embed Patrick's `seedance-prompting` skill in `generate_video` docstring | **Closed** — no, skill loads on its own |
 | 7 | `generate_audio` default | **Closed** — `False` (override per call) |
@@ -806,7 +806,12 @@ Step 0 is small but critical — without it, Step 2 has to fake CLI internals. S
 ## Future / v2
 
 - **Provider abstraction** for video: once Fal lands, factor `provider` arg or sibling tool. Defer until a second provider exists.
-- **Async/polling** for `generate_video`. Split into `start_video_job` / `poll_video_job` if blocking annoys.
+- **Async video jobs** for `generate_video`. Split the current blocking path into `start_video_job` / `get_video_job` while keeping blocking `generate_video` as a convenience wrapper. Local polling should be the default fallback, but Replicate webhooks are the better long-job path when the caller can provide a public HTTPS receiver:
+  - `start_video_job(...)` creates a Replicate prediction with `webhook` and `webhook_events_filter=["completed"]`, then returns `{job_id, prediction_id, status, job_dir}` immediately.
+  - The webhook receiver verifies Replicate's signature, handles duplicate/out-of-order deliveries idempotently, downloads outputs before provider URLs expire, and writes local `job.json` / `status.json`.
+  - `get_video_job(job_id)` reads local status first and can fall back to Replicate prediction polling when no webhook is configured or the webhook is delayed.
+  - Do not make stdio MCP itself the webhook receiver; it needs a separate HTTP process or an existing app endpoint. Local development needs an HTTPS tunnel such as Cloudflare Tunnel or ngrok.
+  - Current blocker: `replicate_min.generate()` uses blocking `replicate.run(...)`; v2 needs a non-blocking prediction-create helper alongside it.
 - **`plan_job` standalone tool.** If a workflow emerges where the agent wants pre-flight without a tool call to a gen function, revisit. For now `dry_run` covers it.
 - **Streaming results** for analysis tools. Useful for long describe-mode outputs.
 - **Vault-aware tools** (`log_prompt_entry`, `mark_keyframe_approved`). Tempting but reverses the Portability Principle. Build a separate vault-aware MCP if desired.
@@ -880,6 +885,7 @@ This audit informs *what fields the MCP returns* but does not *shape the field n
 ## File reference index
 
 - This doc: `/Users/daviddickinson/Projects/Lora/riff-mcp/MCP_DESIGN.md`
+- **Live verification notes** (behavioral findings from running the tools end-to-end during the v1 build — calibration vs. hand-eval, FPS=12 evidence, `compare_images` cross-image-grounding caveat, codex-review pattern, cost/latency, v2 candidates): `/Users/daviddickinson/Projects/Lora/riff-mcp/LIVE_VERIFICATION.md`
 - CLI we're wrapping: `/Users/daviddickinson/Projects/Lora/riff-mcp/src/gemini_video_prompts/cli.py`
 - DMPOST31 server prior art: `/Users/daviddickinson/Projects/LLM/DMPOST31/ae-mcp-dmpost/dmpost-gemini-mcp/server.py`
 - DMPOST31 Replicate vendor: `/Users/daviddickinson/Projects/LLM/DMPOST31/ae-mcp-dmpost/dmpost-gemini-mcp/vendor/replicate_min.py`
