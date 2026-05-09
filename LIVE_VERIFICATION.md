@@ -2,7 +2,7 @@
 
 What we learned by running the tools end-to-end during the v1 build. Everything here is grounded in actual API calls against real artifacts; nothing is hypothetical. The code itself, design doc, and git log capture *what we built*; this captures *how it behaves in practice* and *where the rough edges are*.
 
-Updated 2026-05-08, immediately after Step 8 closed out v1; extended same day with the live Seedance fire (v2 item #1).
+Updated 2026-05-08. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the same day; v2 #5 (local async API) implemented + mock-verified + live-smoked; v2 #2 (`.mcp.example.json` + `riff-mcp-doctor`) wired the surface for agent use.
 
 ---
 
@@ -87,6 +87,25 @@ Updated 2026-05-08, immediately after Step 8 closed out v1; extended same day wi
 - **Flash is sufficient** for this tool. Pro would be overkill.
 - Latency: ~10–15s on Flash.
 
+### `start_video_job` / `get_video_job` / `cancel_video_job` (v2 #5, async API)
+
+- **Two-tier file system** — durable async state under `<out_root>/jobs/<job_id>/{request.json, status.json}` plus the actual generated media under the existing `<out_root>/<today>/<model>/01_<title>_<hash>_<job_id>/` layout. The `_<job_id>` suffix on the media dir prevents collisions when the same prompt fires multiple times.
+- **`request.json` is immutable, `status.json` is mutable** — captured intent vs. running state. If `status.json` gets corrupted, `request.json` survives. Two-file split is journaled state without over-engineering.
+- **Half-built record protection** — `start_video_job` writes local state *only after* `create_seedance_prediction` returns successfully. If creation fails (e.g., REPLICATE_API_TOKEN missing), no orphan local job record. Tested via `test_start_video_job_create_failure_leaves_no_local_job_record`.
+- **Idempotent finalization** — `get_video_job` re-finalizes if local status is "succeeded" but the result/outputs haven't been generated yet. Important for crash recovery: if the process dies between Replicate-success and disk-write, the next poll completes the work.
+- **Cancel-races-with-complete handled implicitly** — `_merge_prediction_status` checks the provider status regardless of which entry point called it, so a cancel that returns "succeeded" still downloads outputs.
+- **Live smoke (v2 #5)** — first attempt with `duration=1` rejected by live endpoint despite docs saying 1..15; this surfaced the **second case of schema-vs-live drift** in this surface (after `_get_url` in v2 #1) and was fixed to `4..15` or `-1`. Second smoke succeeded: 4s @ 480p @ 1:1 text-only, job `de2f644b0f97`, terminal "succeeded" on poll 10. Output: `out/async-smoke/2026-05-08/bytedanceseedance-20/01_async-smoke-4s_0ed8e9ad_de2f644b0f97/async-smoke-4s_00.mp4` (114KB, 640×640, 4.04s, 24fps).
+- **Mock test coverage**: 17 tests covering 3 modes, 5 validation paths, coded-prefix preservation, sync sidecar, async start/poll/cancel, JOB_NOT_FOUND, poll=False, create-failure no-record. All green.
+
+### `riff-mcp-doctor` (v2 #2)
+
+- **Console script in a new `riff_mcp_doctor` package** — separate from existing CLIs to keep their argparse-positional shape intact. Adds ~70 LOC plus tests.
+- **Categories**: env vars, Python packages (by import name, not pip name), binaries on PATH (ffmpeg/ffprobe), and optional `--network` (cheap Gemini `models.list()` + Replicate `models.list()` calls — verifies tokens are valid, not just present).
+- **Skip-not-fail for network when keys are missing** — a doctor that says "fix env first, then re-run with --network" is more useful than one that fails twice. One root cause per surface, no cascade.
+- **`--json` flag** for scriptability; exits 1 on any required failure.
+- **Live verification on this machine**: all checks pass — 50 Gemini models reachable, Replicate auth ok, both binaries on PATH at `/opt/homebrew/bin/`.
+- **Tests**: 13 unit-level tests (env present/missing, pkg present/missing, binary present/missing, no-network, network-skip-when-no-keys, formatting, exit codes).
+
 ### `extract_video_frames` (Step 7)
 
 - **Frame-accurate seek working** via `-ss` after `-i`. On the bridge video at timestamps `[3.5, 4.0, 4.083, 4.167, 4.5]`, all 5 PNGs land in `<video_dir>/frames/` with 3-decimal timestamp precision in the filenames.
@@ -109,6 +128,21 @@ Updated 2026-05-08, immediately after Step 8 closed out v1; extended same day wi
 - `decision_hint` matched my hand-eval on every case tested (`direction_gate` for v13, `reroll` for the bridge cut).
 
 **Pattern:** Single-image / single-video tools are reliably sharper than my baseline. Cross-image is the weakest surface. This validates the design doc's A/B comparison plan as the right experiment to actually run, with the prior that single-modality > cross-modality.
+
+---
+
+## Schema-vs-live drift (live fire as a permanent fixture)
+
+Live fire has now caught **two for two** schema-vs-live mismatches that mock testing couldn't:
+
+| Round | Drift caught |
+|-------|--------------|
+| v2 #1 fire | `replicate.helpers.FileOutput.url` is a string property in the modern SDK; vendored `_get_url` only handled the older `url()` callable form, so outputs silently wrote as `.bin` (file content was valid mp4 throughout — graceful failure, invisible to dry-run/import/mock). |
+| v2 #5 first smoke | Live Seedance endpoint rejects `duration < 4` despite the published schema/docs saying 1..15. Local validation tightened to `4..15` or `-1`. |
+
+**Pattern**: published schemas underspecify; production endpoints over-constrain. They diverge whenever the implementation tightens for stability/cost reasons (4s minimum is probably an artifact-reduction heuristic). Vendored adapter code rots whenever the upstream SDK shape changes (callable→string property in this case).
+
+**Implication**: every external-service adapter benefits from a **schema-conformance smoke test** as a permanent fixture — a small `pytest -m live` lane that runs the cheapest possible live call on every adapter and asserts the response shape matches our types. Doesn't need to be CI; just runnable on demand. Cost: ~$0.10–0.30 per provider per check. Without it, schema drift accumulates silently between SDK upgrades.
 
 ---
 
@@ -140,6 +174,9 @@ Five rounds of codex review across the project found small-but-real bugs that st
 | `extract_visual_tokens` on Flash | ~10–15s | ~$0.01 |
 | `extract_video_frames` (ffmpeg, 5 timestamps) | <1s | $0 |
 | `generate_video` on Seedance (live, cold start, 5s @720p, 4:3) | **153.9s actual** (predict 153.3s, download 0.35s) | ~$0.30 actual |
+| `start_video_job` + 10× `get_video_job` polling to terminal (live, 4s @480p @1:1) | similar Seedance latency, polling is local file reads | ~$0.10 actual |
+| `riff-mcp-doctor` (no network) | <1s | $0 |
+| `riff-mcp-doctor --network` | ~2–3s (Gemini models.list + Replicate models.list) | $0 (free GETs) |
 
 Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient for `extract_visual_tokens`. Worth piloting Flash on `describe_image` for a few rounds to see if it holds the eight-category quality bar — would cut analysis cost ~5×.
 
@@ -151,7 +188,7 @@ Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient 
 
 1. ~~**Live Seedance fire**~~ ✅ done 2026-05-08 — surfaced the `_get_url` shape-drift bug, validated cold-start latency (~154s), characterized Seedance's pen-and-ink preservation behavior. See `generate_video` per-tool section above.
 1a. **Suppress `[Image1] not in prompt` warning for `first_last_frames` mode** — false positive when image role is implicit. `seedance.check_prompt_references` should accept a `mode` param and skip FIRST_FRAME / LAST_FRAME entries.
-2. **`.mcp.json` wiring** — both servers (`gemini-prompts-mcp`, `media-analysis-mcp`) only invokable via direct Python today. Wiring into Claude Code's MCP config is the next operational step before agents can use them natively.
+2. ~~**`.mcp.json` wiring**~~ ✅ done 2026-05-08 — `.mcp.example.json` at repo root with `REPO_PATH` placeholder and env scaffolding for both servers. Companion `riff-mcp-doctor` console script verifies env vars, Python packages, ffmpeg/ffprobe on PATH; `--network` adds Gemini + Replicate auth pings.
 3. **Flash trial for `describe_image`** — Pro is the safe default; Flash *may* be sufficient for routine description, with ~5× cost reduction. Worth ~5 paired calls to see if the eight categories hold quality.
 4. **`compare_images` mitigation** — current docstring caveat is the v1 fix. v2 ideas: (a) two-pass workflow that calls `describe_image` per candidate first, then asks Pro to reason across the descriptions (not the images); (b) explicit "verify which image you're describing" step in the system prompt.
 5. ~~**Async/polling for `generate_video`**~~ ✅ local async plumbing is now mock-verified and live-smoked via `start_video_job(...)`, `get_video_job(job_id)`, and `cancel_video_job(job_id)`. It writes durable `request.json` / `status.json` files under `<out_root>/jobs/`, uses non-blocking Replicate prediction creation, and downloads outputs on terminal success.
@@ -159,6 +196,9 @@ Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient 
    - Second async smoke attempt (2026-05-08) succeeded with `duration=4`, `resolution=480p`, `aspect_ratio=1:1`, text-only prompt. Job `de2f644b0f97`, prediction `hv932xrpv9rmr0cy19mafjakrw`, terminal status `succeeded` on poll 10. Output downloaded to `out/async-smoke/2026-05-08/bytedanceseedance-20/01_async-smoke-4s_0ed8e9ad_de2f644b0f97/async-smoke-4s_00.mp4` (114,096 bytes, 640×640, 4.04s, 24fps, no audio). This live-smoked `predictions.create(wait=False)`, `predictions.get`, local status merging, output download, `job.json` write, and ffprobe enrichment.
 6. **Eval calibration loop** — for any tool where Gemini's score/judgment is consumed downstream (`score_image`, `score_video`, `compare_images`), periodically have a human re-score 10 outputs and check for drift. The `decision_hint` field is the most likely to drift.
 7. **Standalone repo cleanup** — `~/Projects/LLM/media-analysis-mcp/` (the abandoned scaffold from before consolidation) is still on disk. David's call when to remove.
+8. **Schema-conformance live lane** — small `pytest -m live` fixture that runs the cheapest possible call against each adapter (Seedance 4s @480p, Gemini one-image describe, etc.) and asserts response shapes match our types. ~$0.30–0.40/full run; runnable on demand. Justified by the two schema-drift catches in v2 #1 and v2 #5 — without it, drift accumulates silently between SDK upgrades.
+9. **Pytest as a dev dep** — currently `uv run pytest` requires `--with pytest` since pytest isn't in `[dependency-groups] dev`. Small papercut, easy fix when convenient.
+10. **`compare_videos`** (codex follow-on) — same shape as `compare_images` but for clips. Natural after v2 #4 (`compare_images` mitigation) lands so both share the two-pass pattern.
 
 ---
 
@@ -173,3 +213,18 @@ Pro is roughly 5× more expensive than Flash on token cost; Flash is sufficient 
 - Grothendieck source PNG: `local/Images/Grothendieck/ChatGPT Image May 8, 2026, 06_15_10 PM.png`
 - Seedance fire output: `out/2026-05-08/bytedanceseedance-20/01_seedance-fire-grothendieck-seed-cluster_5b943597/seedance-fire-grothendieck-seed-cluster_00.mp4`
 - Seedance fire frames: same dir, `frames/seedance-fire-grothendieck-seed-cluster_00_t{00.000,02.500,04.900}.png`
+- Async smoke output: `out/async-smoke/2026-05-08/bytedanceseedance-20/01_async-smoke-4s_0ed8e9ad_de2f644b0f97/async-smoke-4s_00.mp4`
+- Async job records: `out/async-smoke/jobs/de2f644b0f97/{request.json, status.json}`
+- MCP wiring template: `.mcp.example.json` (repo root)
+- Doctor source: `src/riff_mcp_doctor/doctor.py`
+- Doctor tests: `tests/test_doctor.py`
+
+## Recent commits (this session)
+
+- `1fffa69` — Add `.mcp.example.json` + `riff-mcp-doctor` (v2 #2)
+- `cc38254` — Validate async video jobs against live Seedance (v2 #5 live smoke + duration-min fix)
+- `6744318` — Implement local async video jobs (v2 #5 main implementation, mock-verified)
+- `c486b47` — Capture v2 #1 live Seedance fire findings (this doc)
+- `db27c51` — Capture v1 live-verification findings before context compact
+
+For future-you after compact: read `MCP_DESIGN.md` (architecture) + this doc (behavior, current state, v2 progress) + `git log --oneline -20`. Test suite: `uv run --with pytest pytest tests/ -v` → 35 passing. Doctor sanity: `uv run riff-mcp-doctor --network`.
