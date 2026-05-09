@@ -587,6 +587,216 @@ def score_video(
 
 
 @mcp.tool()
+def compare_images(
+    image_paths: list[str],
+    prompt: str,
+    intent: Optional[str] = None,
+    context: Optional[str] = None,
+    criteria: Optional[list[str]] = None,
+    model: str = "gemini-3.1-pro-preview",
+    temperature: float = 0.3,
+    system_prompt: Optional[str] = None,
+) -> dict[str, Any]:
+    """Pick the best of N candidate images against a brief.
+
+    Returns a comparison narrative + the chosen candidate (resolved to its
+    1-indexed position and absolute path) + a 1-2 sentence reasoning string.
+
+    Default criteria are the 6 dimensions from ``generation-review-loop``;
+    override for non-Patrick workflows.
+
+    **Calibration caveat.** Cross-image grounding is harder than single-image
+    analysis — the model can correctly *pick* the better candidate while
+    misattributing which image holds which specific detail in the
+    ``comparison`` text. The ``pick.best_index`` is the most reliable field;
+    the ``comparison`` and ``reasoning`` strings should be read as
+    directional, not authoritative on sub-image specifics. For
+    detail-sensitive cross-image reasoning, prefer ``describe_image`` on
+    each candidate separately and let the agent reason across the
+    descriptions.
+
+    Args:
+        image_paths: List of 2+ candidate image paths. Order matters —
+            ``best_index`` in the return is 1-indexed against this list.
+        prompt: The shared gen prompt that produced these candidates (or
+            empty if the candidates came from different prompts).
+        intent: The creative brief — what the candidates are competing to
+            satisfy.
+        context: Per-call freeform notes — what specifically you want the
+            comparison to weight (e.g., "I'm only worried about style_lock
+            this round; ignore composition variance").
+        criteria: Override the default 6-dim list.
+        model: Gemini model id.
+        temperature: 0..1. Default 0.3 — low for selection consistency.
+        system_prompt: Override the default comparison-mode instruction.
+
+    Raises:
+        RuntimeError: ``INVALID_INPUT`` (fewer than 2 candidates),
+        ``IMAGE_NOT_FOUND``, ``API_KEY_MISSING``, or other coded errors.
+        ``SCHEMA_MISMATCH`` if Gemini returns a ``best_index`` outside the
+        valid range [1, len(image_paths)].
+    """
+    if not isinstance(image_paths, list) or len(image_paths) < 2:
+        raise RuntimeError(
+            f"INVALID_INPUT: compare_images needs at least 2 candidates "
+            f"(got {len(image_paths) if isinstance(image_paths, list) else type(image_paths).__name__})"
+        )
+    for path_str in image_paths:
+        if not Path(path_str).expanduser().is_file():
+            raise RuntimeError(f"IMAGE_NOT_FOUND: {path_str}")
+
+    criteria_list = list(criteria) if criteria else list(prompts.SIX_DIMENSIONS)
+
+    image_module = gemini_media.require_pillow()
+    client, gtypes = gemini_media.init_client()
+
+    system_instruction = system_prompt or prompts.compare_images_system_prompt(
+        criteria_list
+    )
+
+    # Build the multimodal contents: context block, then numbered candidates.
+    contents: list[Any] = [
+        prompts.context_block(prompt=prompt, intent=intent, context=context),
+    ]
+    resolved_paths: list[str] = []
+    for idx, path_str in enumerate(image_paths, start=1):
+        resolved = str(Path(path_str).expanduser().resolve())
+        resolved_paths.append(resolved)
+        contents.append(f"Candidate Image {idx}:")
+        contents.append(gemini_media.load_image(path_str, image_module=image_module))
+
+    parsed: schemas.ImageComparisonResult = gemini_media.call_structured(
+        client=client,
+        gtypes=gtypes,
+        model=model,
+        system_instruction=system_instruction,
+        contents=contents,
+        response_schema=schemas.ImageComparisonResult,
+        temperature=temperature,
+    )
+
+    if parsed.best_index < 1 or parsed.best_index > len(image_paths):
+        raise RuntimeError(
+            f"SCHEMA_MISMATCH: best_index={parsed.best_index} is outside the "
+            f"valid range [1, {len(image_paths)}]"
+        )
+
+    return {
+        "model": model,
+        "image_paths": resolved_paths,
+        "comparison": parsed.comparison,
+        "pick": {
+            "best_index": parsed.best_index,
+            "best_path": resolved_paths[parsed.best_index - 1],
+            "reasoning": parsed.reasoning,
+        },
+        "context_used": {
+            "prompt": prompt,
+            "intent": intent,
+            "context": context,
+            "criteria": criteria_list,
+        },
+    }
+
+
+@mcp.tool()
+def extract_visual_tokens(
+    image_path: str,
+    categories: Optional[list[str]] = None,
+    intent: Optional[str] = None,
+    model: str = "gemini-3-flash-preview",
+    temperature: float = 0.3,
+    system_prompt: Optional[str] = None,
+) -> dict[str, Any]:
+    """Deconstruct an image into reusable prompt tokens by category.
+
+    Default categories are the env-coverage workflow's five (lighting,
+    atmosphere, palette, materials, spatial_grammar) per
+    ``vault_gml/CLAUDE.md:164``. Output is short token phrases per category
+    (1–3 words each) — concrete visual vocabulary another genesis prompt
+    can paste in verbatim.
+
+    Defaults to Flash because this is the cheap, descriptive lane —
+    extraction is straightforward enough that Pro reasoning isn't needed.
+
+    Args:
+        image_path: Absolute path to the image to deconstruct.
+        categories: Override the default 5-category list.
+        intent: Optional brief — focuses the extraction (e.g., "I'm only
+            interested in tokens relevant to teal-orange grade and
+            anamorphic optics, skip color-palette specifics").
+        model: Gemini model id. Default ``gemini-3-flash-preview``.
+        temperature: 0..1. Default 0.3.
+        system_prompt: Override the default extraction instruction.
+
+    Raises:
+        RuntimeError: ``IMAGE_NOT_FOUND``, ``API_KEY_MISSING``,
+        ``SCHEMA_MISMATCH`` (Gemini returned categories that don't match
+        the request), or other coded errors.
+    """
+    if not Path(image_path).expanduser().is_file():
+        raise RuntimeError(f"IMAGE_NOT_FOUND: {image_path}")
+
+    categories_list = list(categories) if categories else list(prompts.TOKEN_CATEGORIES)
+
+    image_module = gemini_media.require_pillow()
+    client, gtypes = gemini_media.init_client()
+
+    system_instruction = system_prompt or prompts.extract_visual_tokens_system_prompt(
+        categories_list
+    )
+
+    contents: list[Any] = []
+    if intent and intent.strip():
+        contents.append(f"Brief: {intent.strip()}")
+    contents.append("Image to deconstruct:")
+    contents.append(gemini_media.load_image(image_path, image_module=image_module))
+
+    parsed: schemas.VisualTokensResult = gemini_media.call_structured(
+        client=client,
+        gtypes=gtypes,
+        model=model,
+        system_instruction=system_instruction,
+        contents=contents,
+        response_schema=schemas.VisualTokensResult,
+        temperature=temperature,
+    )
+
+    # Strict post-parse validation — same approach as score_image's criterion check.
+    parsed_names = [cat.category for cat in parsed.categories]
+    expected = set(categories_list)
+    actual = set(parsed_names)
+    if actual != expected or len(parsed_names) != len(actual):
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        duplicates = sorted({n for n in parsed_names if parsed_names.count(n) > 1})
+        details = []
+        if missing:
+            details.append(f"missing={missing}")
+        if unexpected:
+            details.append(f"unexpected={unexpected}")
+        if duplicates:
+            details.append(f"duplicates={duplicates}")
+        raise RuntimeError(
+            f"SCHEMA_MISMATCH: Gemini returned category names that do not "
+            f"match the request exactly. Expected: {sorted(expected)}. "
+            + "; ".join(details)
+        )
+
+    tokens_dict = {cat.category: list(cat.tokens) for cat in parsed.categories}
+
+    return {
+        "model": model,
+        "image_path": str(Path(image_path).expanduser().resolve()),
+        "tokens": tokens_dict,
+        "context_used": {
+            "intent": intent,
+            "categories": categories_list,
+        },
+    }
+
+
+@mcp.tool()
 def extract_video_frames(
     video_path: str,
     timestamps: list[ffmpeg_utils.Timestamp],

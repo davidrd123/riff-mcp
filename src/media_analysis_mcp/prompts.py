@@ -23,6 +23,18 @@ SIX_DIMENSIONS: list[str] = [
 ]
 
 
+# Default categories for extract_visual_tokens — sourced from the GML vault's
+# environment-coverage workflow (vault_gml/CLAUDE.md:164: "clean plate →
+# tokens → genesis"). Override via the ``categories`` arg for other domains.
+TOKEN_CATEGORIES: list[str] = [
+    "lighting",
+    "atmosphere",
+    "palette",
+    "materials",
+    "spatial_grammar",
+]
+
+
 def context_block(
     *, prompt: str, intent: Optional[str], context: Optional[str]
 ) -> str:
@@ -185,6 +197,59 @@ def score_video_system_prompt(criteria: list[str]) -> str:
         "- reroll — composition, motion, or geometry fundamentally broken\n"
         "- direction_gate — two or more valid directions, OR creative brief "
         "may need revision, OR same failure across attempts"
+    )
+
+
+def compare_images_system_prompt(criteria: list[str]) -> str:
+    """System instruction for compare_images — Gemini picks the best of N.
+
+    Multiple candidate images are passed in numbered order. Gemini compares
+    them across the requested criteria, names the differences, and picks
+    one. Returns ``best_index`` as a 1-indexed position in the input list
+    so the wrapper can resolve it back to a path.
+    """
+    criteria_lines = "\n".join(f"- {c}" for c in criteria)
+    return (
+        "You are an experienced visual director comparing AI-generated "
+        "candidate images and picking the best one for the brief. The "
+        "candidates are presented in numbered order — 'Image 1' is the "
+        "first uploaded image, 'Image 2' is the second, and so on.\n\n"
+        f"Compare the candidates across these criteria:\n{criteria_lines}\n\n"
+        "In ``comparison``, write 2–4 sentences walking through the "
+        "differences across criteria. Cite specific visual evidence — what "
+        "you actually see in each candidate, not generic adjectives.\n\n"
+        "In ``best_index``, return the 1-indexed position of the strongest "
+        "candidate (1 for the first image, 2 for the second, etc.).\n\n"
+        "In ``reasoning``, give 1–2 sentences naming the decisive factor "
+        "that put your pick above the others."
+    )
+
+
+def extract_visual_tokens_system_prompt(categories: list[str]) -> str:
+    """System instruction for extract_visual_tokens — token deconstruct.
+
+    Output is short token phrases per category (1–3 words each), not prose.
+    Used to feed the env-coverage workflow: read a clean plate, extract
+    tokens by category, then write a fresh genesis prompt from the tokens
+    so a new shot inherits the same visual world.
+    """
+    categories_lines = "\n".join(f"- {c}" for c in categories)
+    return (
+        "You are a visual director deconstructing an image into reusable "
+        "prompt tokens. Output short, concrete token phrases — 1–3 words "
+        "each — that another generation prompt could paste in verbatim. "
+        "Avoid full sentences; avoid hedge words; avoid generic adjectives "
+        "like 'beautiful' or 'cinematic'.\n\n"
+        f"Categories to extract (return one entry per category, in this "
+        f"order):\n{categories_lines}\n\n"
+        "For each category: ``category`` (exact match from the list above) "
+        "and ``tokens`` (3–8 short phrases). Concrete visual vocabulary the "
+        "image actually shows — not interpretations.\n\n"
+        "Examples of good tokens:\n"
+        "  lighting: 'high-key commercial', 'warm key light', 'no cast shadows'\n"
+        "  palette: 'candy pink', 'electric mint', 'warm cream'\n"
+        "  materials: 'glossy lacquer', 'matte fabric', 'chrome'\n"
+        "  spatial_grammar: 'isometric 3/4', 'flat horizontal plane'\n"
     )
 
 

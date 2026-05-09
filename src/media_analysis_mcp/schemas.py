@@ -185,3 +185,64 @@ class ImageScoreResult(BaseModel):
         description="Advisory next-action recommendation. Treat as the "
         "model's vote; the agent has final say.",
     )
+
+
+# ---------- compare_images ----------
+
+
+class ImageComparisonResult(BaseModel):
+    """compare_images return shape (Gemini-produced fields only).
+
+    The wrapper resolves ``best_index`` to a path and adds ``model``,
+    ``image_paths``, and ``context_used``.
+    """
+
+    comparison: str = Field(
+        ...,
+        description="2-4 sentences walking through how the candidates differ "
+        "across the requested criteria. Cite specific visual evidence.",
+    )
+    best_index: int = Field(
+        ...,
+        ge=1,
+        description="1-indexed position of the chosen image in the input list. "
+        "1 = first image, 2 = second, etc.",
+    )
+    reasoning: str = Field(
+        ...,
+        description="1-2 sentences naming the decisive factor that picked this "
+        "candidate over the others.",
+    )
+
+
+# ---------- extract_visual_tokens ----------
+
+
+class CategoryTokens(BaseModel):
+    """Tokens for one category — short visual-vocabulary phrases, not prose."""
+
+    category: str = Field(
+        ...,
+        description="Category name, exactly matching one of the values in the "
+        "categories list provided in the system prompt",
+    )
+    tokens: list[str] = Field(
+        ...,
+        description="3-8 short token phrases (1-3 words each) capturing the "
+        "category's signal in this image. Concrete visual vocabulary, not "
+        "explanatory sentences.",
+    )
+
+
+class VisualTokensResult(BaseModel):
+    """extract_visual_tokens return shape (Gemini-produced fields only).
+
+    The wrapper transforms ``categories`` from a list to a category-keyed dict
+    and adds ``model`` and ``image_path``.
+    """
+
+    categories: list[CategoryTokens] = Field(
+        ...,
+        description="One entry per category in the requested categories list, "
+        "in the same order",
+    )
