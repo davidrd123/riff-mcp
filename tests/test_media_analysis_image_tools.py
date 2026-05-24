@@ -13,6 +13,12 @@ class _FakeTypes:
     pass
 
 
+class _CaptureConfigTypes:
+    class GenerateContentConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+
 @pytest.fixture
 def image_path(tmp_path: Path) -> Path:
     image = tmp_path / "target.png"
@@ -99,6 +105,8 @@ def test_score_image_returns_evaluations_keyed_by_requested_criteria(
 
     def fake_call_structured(**kwargs):
         assert kwargs["response_schema"] is schemas.ImageScoreResult
+        assert kwargs["model"] == server.DEFAULT_ANALYSIS_MODEL
+        assert kwargs["temperature"] is None
         return _score_result(criteria)
 
     monkeypatch.setattr(server.gemini_media, "call_structured", fake_call_structured)
@@ -112,6 +120,52 @@ def test_score_image_returns_evaluations_keyed_by_requested_criteria(
     assert list(result["evaluations"].keys()) == criteria
     assert result["evaluations"]["prompt_fidelity"]["score"] == 80
     assert result["decision_hint"] == "accept"
+
+
+def test_structured_call_omits_temperature_by_default() -> None:
+    captured: dict = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return type("Response", (), {"parsed": _description_result()})()
+
+    client = type("Client", (), {"models": FakeModels()})()
+
+    parsed = server.gemini_media.call_structured(
+        client=client,
+        gtypes=_CaptureConfigTypes,
+        model="test-model",
+        system_instruction="describe",
+        contents=["target"],
+        response_schema=schemas.ImageDescriptionResult,
+    )
+
+    assert parsed.observations.composition == "Centered subject with a tight crop."
+    assert "temperature" not in captured["config"].kwargs
+
+
+def test_structured_call_keeps_explicit_temperature_override() -> None:
+    captured: dict = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return type("Response", (), {"parsed": _description_result()})()
+
+    client = type("Client", (), {"models": FakeModels()})()
+
+    server.gemini_media.call_structured(
+        client=client,
+        gtypes=_CaptureConfigTypes,
+        model="test-model",
+        system_instruction="describe",
+        contents=["target"],
+        response_schema=schemas.ImageDescriptionResult,
+        temperature=0.2,
+    )
+
+    assert captured["config"].kwargs["temperature"] == 0.2
 
 
 @pytest.mark.parametrize(

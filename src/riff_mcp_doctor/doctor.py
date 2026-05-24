@@ -36,6 +36,22 @@ class CheckResult:
     required_for: list[str] = field(default_factory=list)
 
 
+def load_dotenv_if_available() -> bool:
+    """Best-effort .env load so the doctor sees what the servers see.
+
+    The servers (gemini_media, replicate_min, cli) all call ``load_dotenv()``
+    before reading secrets, so a token supplied via repo-root ``.env`` is
+    valid even when it is absent from the shell. Without this, the doctor
+    would false-FAIL for anyone using the ``.env`` path. Fails silently if
+    python-dotenv is not installed.
+    """
+    try:
+        from dotenv import load_dotenv  # type: ignore
+    except ModuleNotFoundError:
+        return False
+    return bool(load_dotenv())
+
+
 def check_env(name: str, required_for: list[str]) -> CheckResult:
     val = os.getenv(name)
     if val:
@@ -180,6 +196,10 @@ def check_replicate_network() -> CheckResult:
 def run_all_checks(*, network: bool = False) -> list[CheckResult]:
     """Return all check results in display order."""
     results: list[CheckResult] = []
+
+    # Load .env first so env checks reflect what the servers actually see,
+    # not just the raw shell environment.
+    load_dotenv_if_available()
 
     # Env vars
     results.append(check_env(GEMINI_KEY, [GENERATION_SERVER, ANALYSIS_SERVER, BATCH_CLI]))

@@ -20,6 +20,7 @@ Current defaults:
 - CLI video default model: `veo-3.1-fast-generate-preview`
 - CLI/MCP image default model: `gemini-3-pro-image-preview`
 - MCP video default model: `bytedance/seedance-2.0`
+- Media-analysis default model: `gemini-3.5-flash`
 
 Model strings remain configurable so a teammate with access to a newer preview
 or provider model can swap it in without editing the code.
@@ -173,7 +174,7 @@ Current defaults in the standalone CLI:
 - mode: `video`
 - video model: `veo-3.1-fast-generate-preview`
 - image model: `gemini-3-pro-image-preview`
-- image temperature: `0.7`
+- image temperature: omitted by default; `--temperature` is an opt-in override
 - image num outputs: `1`
 - video poll interval: `10` seconds
 - output root: `out/`
@@ -272,7 +273,8 @@ Inline-only flags:
 
 Every other CLI flag (`--mode`, `--model`, `--num-outputs`, `--temperature`,
 `--system-prompt`, `--aspect-ratio`, `--out-root`, etc.) works the same in
-inline mode as in batch mode.
+inline mode as in batch mode. Leave `--temperature` unset for Gemini 3.x unless
+you intentionally want to override the model's default sampling behavior.
 
 ## Supported Keys
 
@@ -291,7 +293,7 @@ flags override them. Mode column shows where each key applies.
 | `enhance_prompt` | video | bool |
 | `number_of_videos` | video | |
 | `num_outputs` | image | 1–4 |
-| `temperature` | image | |
+| `temperature` | image | Optional sampling override; omitted by default and generally left unset for Gemini 3.x |
 | `system_prompt` | image | |
 | `image_size` | image | |
 | `image` | both | Single input image path |

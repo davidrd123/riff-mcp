@@ -24,6 +24,7 @@ from . import ffmpeg_utils, gemini_media, prompts, schemas
 
 
 mcp = FastMCP("media-analysis-mcp")
+DEFAULT_ANALYSIS_MODEL = "gemini-3.5-flash"
 
 
 def _build_image_contents(
@@ -108,8 +109,8 @@ def describe_image(
     base_plate_path: Optional[str] = None,
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
-    model: str = "gemini-3.1-pro-preview",
-    temperature: float = 0.3,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
 ) -> dict[str, Any]:
     """Rich structured observations of an image. No scoring, no verdict —
@@ -135,8 +136,8 @@ def describe_image(
         identity_refs: Optional list of character/asset reference paths.
             Useful for evaluating identity carry-through across shot types.
         style_refs: Optional list of style anchor paths.
-        model: Gemini model id. Default ``gemini-3.1-pro-preview``.
-        temperature: 0..1. Default 0.3 — low for description consistency.
+        model: Gemini model id. Default ``gemini-3.5-flash``.
+        temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default observation-mode system
             instruction. Rare.
 
@@ -198,8 +199,8 @@ def score_image(
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
     criteria: Optional[list[str]] = None,
-    model: str = "gemini-3.1-pro-preview",
-    temperature: float = 0.3,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
 ) -> dict[str, Any]:
     """Calibrated scored evaluation against criteria. Gemini is the judge.
@@ -224,8 +225,8 @@ def score_image(
         style_refs: References for style_lock dim.
         criteria: Override the default 6-dim list. Each entry becomes one
             evaluation in the response.
-        model: Gemini model id. Default ``gemini-3.1-pro-preview``.
-        temperature: 0..1. Default 0.3 — low for scoring consistency.
+        model: Gemini model id. Default ``gemini-3.5-flash``.
+        temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default scoring-mode system
             instruction. Rare.
 
@@ -321,8 +322,8 @@ def analyze_image(
     base_plate_path: Optional[str] = None,
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
-    model: str = "gemini-3.1-pro-preview",
-    temperature: float = 0.3,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
 ) -> dict[str, Any]:
     """Free-form image analysis. Same multimodal plumbing as describe_image,
@@ -341,8 +342,8 @@ def analyze_image(
         base_plate_path: Optional reference image (source plate).
         identity_refs: Optional character/asset reference paths.
         style_refs: Optional style anchor paths.
-        model: Gemini model id. Default ``gemini-3.1-pro-preview``.
-        temperature: 0..1. Default 0.3.
+        model: Gemini model id. Default ``gemini-3.5-flash``.
+        temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
 
     Raises:
@@ -480,8 +481,8 @@ def describe_video(
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
     fps: Optional[float] = None,
-    model: str = "gemini-3.1-pro-preview",
-    temperature: float = 0.3,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
 ) -> dict[str, Any]:
@@ -506,8 +507,8 @@ def describe_video(
             the start frame.
         identity_refs: Optional list of character/asset reference paths.
         style_refs: Optional list of style anchor paths.
-        model: Gemini model id. Default ``gemini-3.1-pro-preview``.
-        temperature: 0..1. Default 0.3.
+        model: Gemini model id. Default ``gemini-3.5-flash``.
+        temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default observation-mode instruction.
         upload_timeout_s: How long to wait for Files API to mark the upload
             ACTIVE before raising ``VIDEO_PROCESSING_TIMEOUT``.
@@ -584,8 +585,8 @@ def score_video(
     style_refs: Optional[list[str]] = None,
     criteria: Optional[list[str]] = None,
     fps: Optional[float] = None,
-    model: str = "gemini-3.1-pro-preview",
-    temperature: float = 0.3,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
 ) -> dict[str, Any]:
@@ -701,8 +702,8 @@ def analyze_video(
     identity_refs: Optional[list[str]] = None,
     style_refs: Optional[list[str]] = None,
     fps: Optional[float] = None,
-    model: str = "gemini-3.1-pro-preview",
-    temperature: float = 0.3,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
     upload_timeout_s: int = 300,
 ) -> dict[str, Any]:
@@ -725,8 +726,8 @@ def analyze_video(
         style_refs: Optional style anchor paths.
         fps: Sampling rate Gemini uses when reading the video. Default
             None lets Gemini pick (typically 1 fps).
-        model: Gemini model id. Default ``gemini-3.1-pro-preview``.
-        temperature: 0..1. Default 0.3.
+        model: Gemini model id. Default ``gemini-3.5-flash``.
+        temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
         upload_timeout_s: Bounds the Files API upload+process wait.
 
@@ -800,8 +801,8 @@ def compare_images(
     intent: Optional[str] = None,
     context: Optional[str] = None,
     criteria: Optional[list[str]] = None,
-    model: str = "gemini-3.1-pro-preview",
-    temperature: float = 0.3,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
 ) -> dict[str, Any]:
     """Pick the best of N candidate images against a brief.
@@ -833,8 +834,8 @@ def compare_images(
             comparison to weight (e.g., "I'm only worried about style_lock
             this round; ignore composition variance").
         criteria: Override the default 6-dim list.
-        model: Gemini model id.
-        temperature: 0..1. Default 0.3 — low for selection consistency.
+        model: Gemini model id. Default ``gemini-3.5-flash``.
+        temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default comparison-mode instruction.
 
     Raises:
@@ -911,8 +912,8 @@ def extract_visual_tokens(
     image_path: str,
     categories: Optional[list[str]] = None,
     intent: Optional[str] = None,
-    model: str = "gemini-3-flash-preview",
-    temperature: float = 0.3,
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
 ) -> dict[str, Any]:
     """Deconstruct an image into reusable prompt tokens by category.
@@ -923,8 +924,8 @@ def extract_visual_tokens(
     (1–3 words each) — concrete visual vocabulary another genesis prompt
     can paste in verbatim.
 
-    Defaults to Flash because this is the cheap, descriptive lane —
-    extraction is straightforward enough that Pro reasoning isn't needed.
+    Defaults to Gemini 3.5 Flash because this is a descriptive lane where
+    the stable Flash model is enough and Pro image generation is not needed.
 
     Args:
         image_path: Absolute path to the image to deconstruct.
@@ -932,8 +933,8 @@ def extract_visual_tokens(
         intent: Optional brief — focuses the extraction (e.g., "I'm only
             interested in tokens relevant to teal-orange grade and
             anamorphic optics, skip color-palette specifics").
-        model: Gemini model id. Default ``gemini-3-flash-preview``.
-        temperature: 0..1. Default 0.3.
+        model: Gemini model id. Default ``gemini-3.5-flash``.
+        temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default extraction instruction.
 
     Raises:

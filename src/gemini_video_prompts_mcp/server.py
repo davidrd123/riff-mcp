@@ -319,7 +319,7 @@ def generate_image(
     images: Optional[list[str]] = None,
     aspect_ratio: Optional[str] = None,
     image_size: Optional[str] = None,
-    temperature: float = 0.7,
+    temperature: Optional[float] = None,
     num_outputs: int = 1,
     title: Optional[str] = None,
     out_root: Optional[str] = None,
@@ -340,7 +340,7 @@ def generate_image(
         aspect_ratio: e.g. ``"16:9"``, ``"9:16"``, ``"1:1"``, ``"3:4"``.
             Requires google-genai with ImageConfig support.
         image_size: e.g. ``"1K"``, ``"2K"``. Same caveat as aspect_ratio.
-        temperature: 0..2; default 0.7.
+        temperature: Optional override; omitted by default for Gemini 3.x models.
         num_outputs: 1..4 images per call.
         title: Optional human-readable title; defaults to first words of prompt.
         out_root: Override output root; default ``<cli-repo>/out``.

@@ -176,7 +176,7 @@ def call_structured(
     system_instruction: str,
     contents: list[Any],
     response_schema: Any,
-    temperature: float = 0.3,
+    temperature: Optional[float] = None,
 ) -> Any:
     """Make a structured-output call to Gemini and return the parsed
     Pydantic instance.
@@ -186,12 +186,14 @@ def call_structured(
     google-genai versions expose ``response.parsed`` (a Pydantic instance);
     older versions require parsing ``response.text`` manually.
     """
-    config = gtypes.GenerateContentConfig(
-        system_instruction=system_instruction,
-        temperature=temperature,
-        response_mime_type="application/json",
-        response_schema=response_schema,
-    )
+    config_kwargs: dict[str, Any] = {
+        "system_instruction": system_instruction,
+        "response_mime_type": "application/json",
+        "response_schema": response_schema,
+    }
+    if temperature is not None:
+        config_kwargs["temperature"] = temperature
+    config = gtypes.GenerateContentConfig(**config_kwargs)
     response = client.models.generate_content(
         model=model,
         contents=contents,
@@ -216,7 +218,7 @@ def call_unstructured(
     model: str,
     system_instruction: str,
     contents: list[Any],
-    temperature: float = 0.3,
+    temperature: Optional[float] = None,
 ) -> str:
     """Make a free-form (no response schema) call to Gemini and return the
     response text. Companion to ``call_structured`` for the analyze_* tools.
@@ -225,10 +227,12 @@ def call_unstructured(
     a fixed response taxonomy. The describe_* / score_* tools bind to a
     Pydantic schema for repeatability; analyze_* opts out for flexibility.
     """
-    config = gtypes.GenerateContentConfig(
-        system_instruction=system_instruction,
-        temperature=temperature,
-    )
+    config_kwargs: dict[str, Any] = {
+        "system_instruction": system_instruction,
+    }
+    if temperature is not None:
+        config_kwargs["temperature"] = temperature
+    config = gtypes.GenerateContentConfig(**config_kwargs)
     response = client.models.generate_content(
         model=model,
         contents=contents,

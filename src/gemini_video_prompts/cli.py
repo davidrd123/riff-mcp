@@ -22,7 +22,6 @@ except Exception:  # pragma: no cover
 
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
 DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"
-DEFAULT_IMAGE_TEMPERATURE = 0.7
 BLOCK_SEPARATOR = re.compile(r"(?m)^\s*---+\s*$")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -338,9 +337,6 @@ def build_resolved_image_job(
     resolved_model = (
         model if model else (os.getenv("GEMINI_IMAGE_MODEL") or DEFAULT_IMAGE_MODEL)
     )
-    resolved_temperature = (
-        temperature if temperature is not None else DEFAULT_IMAGE_TEMPERATURE
-    )
     resolved_num_outputs = num_outputs if num_outputs is not None else 1
     resolved_system_prompt = system_prompt if system_prompt is not None else ""
     resolved_out_root = resolve_output_root(str(out_root) if out_root else "out")
@@ -360,7 +356,7 @@ def build_resolved_image_job(
         "video": None,
         "video_uri": None,
         "num_outputs": resolved_num_outputs,
-        "temperature": resolved_temperature,
+        "temperature": temperature,
         "system_prompt": resolved_system_prompt,
         "image_size": image_size,
         "config": dict(config or {}),
@@ -875,7 +871,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.set_defaults(enhance_prompt=None)
     parser.add_argument("--number-of-videos", type=int, help="Override number_of_videos.")
     parser.add_argument("--num-outputs", type=int, help="Override num_outputs for image generation.")
-    parser.add_argument("--temperature", type=float, help="Override image generation temperature.")
+    parser.add_argument("--temperature", type=float, help="Optional image generation sampling override.")
     parser.add_argument("--system-prompt", help="Override system_prompt for image generation.")
     parser.add_argument("--image-size", help="Override image_size for image generation.")
     parser.add_argument("--out-root", help="Override the output root directory.")
