@@ -160,6 +160,58 @@ Running with `--directory` lets the servers find the repo-local `.env`. You can
 also provide `GEMINI_API_KEY` and `REPLICATE_API_TOKEN` directly through the MCP
 client's environment settings.
 
+### Use the servers from another project (recommended for consumers)
+
+The common case is calling these tools from a *different* project — you don't
+work inside `riff-mcp`, you just want its tools available everywhere. For that,
+register the servers at **user scope** so they load in every project:
+
+```bash
+# Run once from anywhere; --scope user writes to ~/.claude.json (global).
+claude mcp add gemini-prompts --scope user \
+  -- uv --directory /ABSOLUTE/PATH/TO/riff-mcp run gemini-prompts-mcp
+claude mcp add media-analysis --scope user \
+  -- uv --directory /ABSOLUTE/PATH/TO/riff-mcp run media-analysis-mcp
+```
+
+(Equivalently, hand-edit the top-level `mcpServers` block in `~/.claude.json`.)
+
+**API keys.** You do not need to copy keys into each project. Because every
+entry runs `uv --directory <riff-mcp> run …`, the server's working directory is
+always the `riff-mcp` checkout, and the servers call `load_dotenv()` — so a
+single `riff-mcp/.env` (with `GEMINI_API_KEY` and `REPLICATE_API_TOKEN`) feeds
+the tools no matter which project you launch from. Alternatively, set the keys
+in the server's `env` block (see `.mcp.example.json`).
+
+### Skip the permission prompts (quick + iterable)
+
+By default Claude Code asks before each tool call. To make the riff loop fast,
+add the tools to a `permissions.allow` list. For a global setup put it in
+`~/.claude/settings.json`; for a single project use that project's
+`.claude/settings.local.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__gemini-prompts__generate_image",
+      "mcp__gemini-prompts__start_video_job",
+      "mcp__gemini-prompts__get_video_job",
+      "mcp__media-analysis__analyze_image",
+      "mcp__media-analysis__analyze_video",
+      "mcp__media-analysis__score_image",
+      "mcp__media-analysis__compare_images",
+      "mcp__media-analysis__extract_visual_tokens",
+      "mcp__media-analysis__extract_video_frames"
+    ]
+  }
+}
+```
+
+The entry format is `mcp__<server-name>__<tool-name>`, where `<server-name>`
+matches the key you registered above. List only the tools you want
+auto-approved; anything omitted still prompts.
+
 ### Diagnose with `riff-mcp-doctor`
 
 Before wiring the MCP servers (or after a "tool not working" report), run:
