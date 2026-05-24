@@ -8,6 +8,8 @@ Toolkit for the *riff* workflow — iteratively generate, analyze, and refine AI
 
 The name comes from the `generation-review-loop` skill's vocabulary for iterative prompt work — *the riff loop*: generate → review → extract → iterate. See [`MCP_DESIGN.md`](MCP_DESIGN.md) for the architecture.
 
+> **Preferred usage: wire the MCP servers into your agent** (see [MCP Servers](#mcp-servers)). The riff loop is designed to run from a chat agent calling the MCP tools directly. The standalone `gemini-video-prompts` CLI remains supported for batch runs and dry-runs, but day-to-day iteration is meant to go through MCP.
+
 The repo now has two generation paths:
 
 - **Standalone CLI** — built around the official `google-genai` Python SDK for
@@ -114,21 +116,25 @@ uv run media-analysis-mcp
 
 Analysis tools:
 
-- `describe_image` / `describe_video` — structured observation against a fixed taxonomy (8 categories for images, 12 for video). No scoring, no verdict — Claude is the judge.
+- `analyze_image` / `analyze_video` — **preferred default.** Free-form Q&A: pass any question, get a prose answer. Same multimodal plumbing, no response schema.
+- `describe_image` / `describe_video` — structured observation against a fixed taxonomy (8 categories for images, 12 for video). No scoring, no verdict — Claude is the judge. _Under review for deprecation_ — its baked-in taxonomy may not be justified vs. `analyze_*`; prefer `analyze_*` for new work.
 - `score_image` / `score_video` — calibrated 0–100 scoring across criteria (default: the 6 dimensions from `generation-review-loop`). Gemini is the judge.
-- `analyze_image` / `analyze_video` — free-form Q&A. Pass any question; get a prose answer. Same multimodal plumbing, no response schema.
 - `compare_images` — pick the best of N candidates against criteria; returns `best_index` + reasoning.
-- `extract_visual_tokens` — deconstruct an image into reusable prompt tokens (lighting/atmosphere/palette/materials/spatial_grammar by default). Defaults to Flash.
+- `extract_visual_tokens` — deconstruct an image into reusable prompt tokens (lighting/atmosphere/palette/materials/spatial_grammar by default).
 - `extract_video_frames` — ffmpeg-based frame extraction at custom timestamps; useful for feeding stills back into image tools.
 
-#### When to use which: `describe_*` vs `analyze_*`
+All Gemini analysis tools share one default model (`gemini-3.5-flash`) and an
+opt-in `temperature` (omitted unless you pass one — each model uses its own
+tuned default).
 
-Both go to the same model with the same multimodal context. The difference is the *response*:
+#### When to use which: `analyze_*` vs `describe_*`
 
-- **`describe_*`** returns a fixed structured shape (8 / 12 named categories). Use when you want **repeatable, comparable** output across iterations — same axes every time, easy to diff between runs. This is the riff-loop calibration tool.
-- **`analyze_*`** returns a single prose answer to a specific question. Use when you have an **ad-hoc question** that doesn't fit the taxonomy ("how does the camera move?", "is the boy on the right's posture stable?", "rate just the lighting in 2 sentences"). No schema lock; no taxonomy decisions baked in.
+Both go to the same model with the same multimodal context. The difference is the *response* shape:
 
-Rule of thumb: reach for `describe_*` first when you're in a calibrated review pass. Reach for `analyze_*` when the structured output is fighting the question you actually want to ask.
+- **`analyze_*` (preferred default)** returns a single prose answer to whatever you ask. Reach for it first: it doesn't force your question through a fixed taxonomy, so it answers the thing you actually want to know ("how does the camera move?", "is the boy on the right's posture stable?", "rate just the lighting in 2 sentences"). No schema lock; no taxonomy decisions baked in.
+- **`describe_*`** returns a fixed structured shape (8 / 12 named categories). Use it specifically when you want **repeatable, comparable** output across iterations — same axes every time, easy to diff between runs — e.g. a calibrated review pass where you're tracking the same dimensions run over run.
+
+Rule of thumb: default to `analyze_*`. Switch to `describe_*` only when you need the structured, diffable taxonomy for side-by-side calibration — and note that `describe_*`'s fixed taxonomy is **under review for deprecation** (it bakes in structure that may not have been justified), so avoid building new workflows that depend on its exact shape.
 
 Example MCP client config when the client launches from outside this repo:
 
@@ -350,6 +356,18 @@ Use a different output root:
 uv run gemini-video-prompts prompts/example_batch.yaml --out-root /tmp/gemini-videos
 ```
 
+Stop on the first failed generation instead of continuing:
+
+```bash
+uv run gemini-video-prompts prompts/example_batch.yaml --fail-fast
+```
+
+Force the input format instead of inferring from the file extension:
+
+```bash
+uv run gemini-video-prompts my_prompts.dat --format yaml
+```
+
 ## Notes
 
 - Google’s video generation flow is asynchronous, so jobs are run sequentially
@@ -371,3 +389,35 @@ uv run gemini-video-prompts prompts/example_batch.yaml --out-root /tmp/gemini-vi
   in video mode. In image mode, `image` and `images` are treated as edit inputs.
 - Advanced model-specific parameters can go under YAML `config` or text headers
   as `config.<key>: value`.
+
+## Changelog
+
+This project follows [semantic versioning](https://semver.org/). The current
+version is set in [`pyproject.toml`](pyproject.toml).
+
+### 0.2.0
+
+- **`analyze_image` / `analyze_video`** — new free-form Q&A analysis tools, now
+  the **preferred default** over the structured `describe_*` tools.
+- **`describe_*` flagged for deprecation review** — its fixed taxonomy bakes in
+  structure that may not be justified; prefer `analyze_*` for new work.
+- **Unified analysis model** — all `media-analysis-mcp` Gemini tools now default
+  to `gemini-3.5-flash` (previously a mix of `gemini-3.1-pro-preview` and
+  `gemini-3-flash-preview`).
+- **Opt-in `temperature`** — across the image CLI, `generate_image`, and all
+  analysis tools, `temperature` is now omitted by default so each Gemini 3.x
+  model uses its own tuned sampling default. Pass a value only to override.
+- **`riff-mcp-doctor`** now loads a repo-root `.env` before running env checks,
+  so it sees the same tokens the servers do.
+
+### 0.1.0
+
+- Initial release.
+- `gemini-video-prompts` batch CLI (text / YAML / inline) for Gemini image and
+  Veo video generation.
+- `gemini-prompts-mcp` — `generate_image`, blocking `generate_video`, and the
+  async `start_video_job` / `get_video_job` / `cancel_video_job` trio
+  (Replicate-Seedance).
+- `media-analysis-mcp` — `describe_*`, `score_*`, `compare_images`,
+  `extract_visual_tokens`, and ffmpeg-based `extract_video_frames`.
+- `riff-mcp-doctor` environment/dependency diagnostics.

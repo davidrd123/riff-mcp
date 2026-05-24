@@ -1,6 +1,6 @@
 [project]
 name = "riff-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Batch Gemini media generation CLI plus companion MCP servers (gemini-prompts-mcp, media-analysis-mcp) for the riff workflow — generate, analyze, iterate."
 readme = "README.md"
 requires-python = ">=3.10"
