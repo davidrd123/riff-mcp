@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,7 +33,7 @@ from . import replicate_min
 
 SEEDANCE_MODEL_DEFAULT = "bytedance/seedance-2.0"
 
-VALID_RESOLUTIONS = {"480p", "720p", "1080p"}
+VALID_RESOLUTIONS = {"480p", "720p", "1080p", "4k"}  # "4k" = 10-bit H.265/HEVC, high bitrate
 VALID_ASPECT_RATIOS = {"16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "9:21", "adaptive"}
 
 # Per-type schema caps (hard — Replicate enforces these)
@@ -390,13 +391,215 @@ def probe_media_info(path: str) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------- #
+# Reference aspect-ratio guard (I/O — reads file headers / ffprobe)           #
+# --------------------------------------------------------------------------- #
+#
+# Seedance's omni_reference path validates each reference's aspect ratio against
+# the requested render ``aspect_ratio`` and, on a mismatch, fails server-side
+# (~30-60s in) with a MISLEADING error:
+#   ValueError: Error processing image /tmp/tmp…download for aspect ratio
+#   validation: unknown file extension:
+# The "unknown file extension" wording is a red herring — verified via source +
+# a Files-API probe that the SDK stamps the real basename/content_type and the
+# upload URL already ends in ``.png``; ByteDance discards it server-side and only
+# trips when it must reconcile an off-ratio reference. The single-frame
+# ``image=`` / ``last_frame_image=`` keys tolerate off-ratio inputs (the server
+# letterboxes them); only ``reference_images`` / ``reference_videos`` are strict.
+# This guard turns that opaque server failure into an instant, specific local one.
+
+# Relative tolerance on the ratio match. Heuristic — the server's exact tolerance
+# is unknown; 2% admits common "16:9-ish" exports (e.g. 1344x768 = 1.75, 1.6% off)
+# while still catching genuinely wrong ratios (4:3, 1:1, 9:16).
+ASPECT_RATIO_TOLERANCE = 0.02
+
+
+def _parse_aspect_ratio(s: str) -> Optional[float]:
+    """``"16:9"`` -> 1.778. Returns None for ``"adaptive"`` / unparseable."""
+    if ":" not in s:
+        return None
+    a, _, b = s.partition(":")
+    try:
+        an, bn = float(a), float(b)
+    except ValueError:
+        return None
+    return an / bn if bn else None
+
+
+def _jpeg_dimensions(path: str) -> Optional[tuple[int, int]]:
+    """(width, height) from a JPEG by scanning Start-Of-Frame markers."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(2) != b"\xff\xd8":  # SOI
+                return None
+            while True:
+                marker = f.read(2)
+                if len(marker) < 2 or marker[0] != 0xFF:
+                    return None
+                m = marker[1]
+                # Standalone markers (no length payload): RSTn (D0-D7), TEM (01).
+                if 0xD0 <= m <= 0xD9 or m == 0x01:
+                    continue
+                seg = f.read(2)
+                if len(seg) < 2:
+                    return None
+                seg_len = struct.unpack(">H", seg)[0]
+                # SOF markers carry dimensions: C0-CF except DHT(C4), JPG(C8), DAC(CC).
+                if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+                    f.read(1)  # sample precision
+                    h, w = struct.unpack(">HH", f.read(4))
+                    return w, h
+                f.seek(seg_len - 2, 1)
+    except (OSError, struct.error):
+        return None
+
+
+def _image_dimensions(path: str) -> Optional[tuple[int, int]]:
+    """(width, height) for common image formats. Returns None when unknown.
+
+    Dependency-free header parsing (PNG/JPEG/GIF/WebP) so it works under the
+    documented ``uv run --with replicate --with python-dotenv`` invocation, which
+    has no PIL. PIL is used opportunistically when importable (broadest coverage).
+    """
+    try:  # opportunistic — best coverage when the venv has Pillow
+        from PIL import Image  # type: ignore
+
+        with Image.open(path) as im:
+            return int(im.width), int(im.height)
+    except Exception:
+        pass
+    try:
+        with open(path, "rb") as f:
+            head = f.read(32)
+    except OSError:
+        return None
+    if head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR":
+        return tuple(struct.unpack(">II", head[16:24]))  # type: ignore[return-value]
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return tuple(struct.unpack("<HH", head[6:10]))  # type: ignore[return-value]
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        fourcc = head[12:16]
+        if fourcc == b"VP8 ":
+            w = struct.unpack("<H", head[26:28])[0] & 0x3FFF
+            h = struct.unpack("<H", head[28:30])[0] & 0x3FFF
+            return w, h
+        if fourcc == b"VP8L":
+            b0, b1, b2, b3 = head[21], head[22], head[23], head[24]
+            w = 1 + (((b1 & 0x3F) << 8) | b0)
+            h = 1 + (((b3 & 0x0F) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6))
+            return w, h
+        if fourcc == b"VP8X":
+            w = 1 + (head[24] | (head[25] << 8) | (head[26] << 16))
+            h = 1 + (head[27] | (head[28] << 8) | (head[29] << 16))
+            return w, h
+    if head[:2] == b"\xff\xd8":
+        return _jpeg_dimensions(path)
+    return None
+
+
+def _video_aspect_ratio(path: str) -> Optional[float]:
+    """Display aspect ratio of a video via ffprobe. None if ffprobe missing/fails."""
+    try:
+        out = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,display_aspect_ratio",
+                "-of", "json", path,
+            ],
+            capture_output=True, text=True, timeout=20, check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        streams = json.loads(out).get("streams") or []
+        if not streams:
+            return None
+        s = streams[0]
+        dar = s.get("display_aspect_ratio")
+        if isinstance(dar, str) and ":" in dar and dar != "0:1":
+            wn, hn = (float(x) for x in dar.split(":", 1))
+            if hn:
+                return wn / hn
+        w, h = s.get("width"), s.get("height")
+        if w and h:
+            return float(w) / float(h)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def assert_reference_aspect_ratios(
+    api_params: dict[str, Any],
+    *,
+    tolerance: float = ASPECT_RATIO_TOLERANCE,
+) -> None:
+    """Reject reference_images/reference_videos that don't match the render ratio.
+
+    Pre-flight for the omni_reference server bug documented above. Raises
+    ``RuntimeError('INVALID_INPUT: ...')`` naming every offending file and its
+    actual ratio. References whose dimensions can't be determined are skipped
+    (unknowns don't block — we never fabricate a rejection). No mutation: callers
+    fix off-ratio refs themselves. Scope is intentionally only the strict
+    ``reference_*`` keys, not ``image`` / ``last_frame_image``.
+    """
+    aspect_ratio = api_params.get("aspect_ratio")
+    target = _parse_aspect_ratio(aspect_ratio) if isinstance(aspect_ratio, str) else None
+    if target is None:  # "adaptive" or unparseable — no fixed ratio to enforce
+        return
+
+    offenders: list[str] = []
+
+    def _off(ratio: float) -> bool:
+        return abs(ratio - target) / target > tolerance
+
+    for path in api_params.get("reference_images") or []:
+        dims = _image_dimensions(path)
+        if not dims or not dims[1]:
+            continue
+        w, h = dims
+        ratio = w / h
+        if _off(ratio):
+            pct = abs(ratio - target) / target * 100
+            offenders.append(
+                f"  {path}: {w}x{h} (ratio {ratio:.3f}, {pct:.0f}% off "
+                f"{aspect_ratio}={target:.3f})"
+            )
+
+    for path in api_params.get("reference_videos") or []:
+        ratio = _video_aspect_ratio(path)
+        if ratio is None:
+            continue
+        if _off(ratio):
+            pct = abs(ratio - target) / target * 100
+            offenders.append(
+                f"  {path}: ratio {ratio:.3f} ({pct:.0f}% off "
+                f"{aspect_ratio}={target:.3f})"
+            )
+
+    if offenders:
+        raise RuntimeError(
+            "INVALID_INPUT: Seedance omni_reference requires every reference to "
+            f"match the render aspect_ratio ({aspect_ratio}); off-ratio references "
+            "fail server-side with a misleading 'unknown file extension' error. "
+            "Re-crop/re-export these to match (or change aspect_ratio):\n"
+            + "\n".join(offenders)
+        )
+
+
+# --------------------------------------------------------------------------- #
 # I/O entry point                                                             #
 # --------------------------------------------------------------------------- #
 
 
 @contextmanager
 def _open_seedance_file_handles(api_params: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    """Yield Replicate params with Seedance path fields opened as binary files."""
+    """Yield Replicate params with Seedance path fields opened as binary files.
+
+    Runs ``assert_reference_aspect_ratios`` first as a fail-fast pre-flight, so an
+    off-ratio reference is rejected locally before any upload rather than ~30-60s
+    later as an opaque server error. This is the single chokepoint for every
+    submission path (``run_seedance_job`` + ``create_seedance_prediction``).
+    """
+    assert_reference_aspect_ratios(api_params)
     open_handles: list[Any] = []
     params = dict(api_params)
 

@@ -455,7 +455,7 @@ def generate_video(
         reference_audios: Up to 3 reference audio paths; total ≤ 15s. Requires
             an anchor (image / reference_images / reference_videos).
         duration: 4..15 seconds, or -1 for the model's "intelligent" length.
-        resolution: ``"480p"`` | ``"720p"`` | ``"1080p"``.
+        resolution: ``"480p"`` | ``"720p"`` | ``"1080p"`` | ``"4k"`` (10-bit H.265).
         aspect_ratio: One of the Seedance enum values (incl. ``"adaptive"``).
         generate_audio: If True, Seedance generates synchronized audio.
             Default False (production typically replaces with edited score).
