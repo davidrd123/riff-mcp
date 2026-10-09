@@ -18,8 +18,9 @@ the tool; see its description for the effective provider-specific default.
 
 ## gemini-prompts-mcp
 
-8 tools.
+9 tools.
 
+- [compare_image_variants](#compare_image_variants)
 - [generate_image](#generate_image)
 - [generate_video](#generate_video)
 - [start_video_job](#start_video_job)
@@ -28,6 +29,113 @@ the tool; see its description for the effective provider-specific default.
 - [cancel_video_job](#cancel_video_job)
 - [get_generation](#get_generation)
 - [list_generations](#list_generations)
+
+### compare_image_variants
+
+Compare 2..8 OpenAI model/quality/size variants of one shared prompt.
+
+Each variant requires explicit model, quality, size and optional label.
+No auto values; exactly one image per variant. References and optional PNG
+alpha mask are shared. dry_run=True previews the full billable batch for free.
+Start edit comparisons without a mask: use the same reference and direct
+instruction for every variant. Do not introduce a hand-drawn mask merely
+to compare models. Test masking separately if targeting errors warrant it.
+Obtain approval for every variant before setting allow_api_billing=True:
+these are OpenAI API charges, separate from ChatGPT/Codex subscriptions.
+Execution stops on the first failure, with no retries or model fallback.
+
+Returns comparison_dir, review_path (local side-by-side HTML), record_path
+(JSON), and results containing original outputs, latency, usage, and dated
+uncached list-price cost estimates when token breakdowns are available.
+Estimates are not invoices; missing usage is unknown, not zero. No matched
+seed is available and one sample does not establish a model ranking.
+Inspect saved job records after a failure before approving another attempt.
+
+```json
+{
+  "properties": {
+    "prompt": {
+      "title": "Prompt",
+      "type": "string"
+    },
+    "variants": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Variants",
+      "type": "array"
+    },
+    "image": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Image"
+    },
+    "images": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Images"
+    },
+    "mask": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mask"
+    },
+    "out_root": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Out Root"
+    },
+    "dry_run": {
+      "default": true,
+      "title": "Dry Run",
+      "type": "boolean"
+    },
+    "allow_api_billing": {
+      "default": false,
+      "title": "Allow Api Billing",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "prompt",
+    "variants"
+  ],
+  "title": "compare_image_variantsArguments",
+  "type": "object"
+}
+```
 
 ### generate_image
 
@@ -40,9 +148,20 @@ CLI layout. Gemini saves PNG; OpenAI saves the returned PNG/JPEG/WebP bytes.
 Args:
     prompt: The image generation prompt.
     system_prompt: Style / behavior instruction sent as system_instruction.
-    model: Defaults to ``gemini-3-pro-image`` for Gemini or ``gpt-image-2`` for OpenAI.
+    model: Defaults to ``gemini-nano-banana-2.1`` for Gemini or ``gpt-image-2`` for OpenAI.
+        Pass ``gemini-3-pro-image`` explicitly for Nano Banana Pro.
+        OpenAI also accepts explicit ``gpt-image-2.5-sunburst`` or
+        ``gpt-image-2.5-flare``; account availability is provider-controlled.
     image: Path to a single reference image (img2img).
     images: List of additional reference image paths.
+    mask: Optional OpenAI-only PNG alpha mask; omit by default. For an
+        identifiable object, first use image plus a direct edit instruction.
+        Use a mask for a user-supplied selection or a demonstrated targeting
+        problem, not as routine preparation. Imperfect boundaries can harm
+        edits. The mask applies to the first reference image.
+        Transparent areas indicate edits. Requires a PNG first reference of
+        matching dimensions and a mask smaller than 4 MiB. Mask guidance
+        does not guarantee pixel-exact preservation outside the region.
     aspect_ratio: e.g. ``"16:9"``, ``"9:16"``, ``"1:1"``, ``"3:4"``.
         Requires google-genai with ImageConfig support.
     image_size: e.g. ``"1K"``, ``"2K"``. Same caveat as aspect_ratio.
@@ -51,7 +170,8 @@ Args:
     api: Gemini: ``generate_content`` (default) or ``interactions``.
         OpenAI: ``images`` (default); references automatically select edits.
     thinking_level: Optional ``minimal``/``low``/``medium``/``high``.
-        Model support varies; Gemini 3.1 Flash Image documents minimal/high.
+        Model support varies; Nano Banana 2.1 documents minimal/medium/high
+        and Gemini 3.1 Flash Image minimal/high.
     store: Persist an Interactions request so it can be continued later.
     previous_interaction_id: Continue a stored interaction. Requires
         ``api="interactions"`` and sends ``prompt`` as the next instruction.
@@ -62,7 +182,8 @@ Args:
     provider: ``gemini`` (default) or ``openai``. OpenAI requires
         ``uv sync --extra openai`` and ``OPENAI_API_KEY``; API billing applies.
     size: OpenAI pixel dimensions, e.g. ``1536x1024``, or ``auto``.
-    quality: OpenAI ``auto``, ``low``, ``medium``, or ``high``.
+    quality: OpenAI ``auto``, ``low``, ``medium``, or ``high``; GPT Image 2.5
+        also supports ``xhigh`` and ``max``.
     output_format: OpenAI ``png`` (default), ``jpeg``, or ``webp``.
     background: OpenAI ``auto``, ``opaque``, or ``transparent`` (PNG/WebP).
     output_compression: OpenAI JPEG/WebP compression, integer 0..100.
@@ -334,6 +455,18 @@ Raises:
       "default": false,
       "title": "Allow Api Billing",
       "type": "boolean"
+    },
+    "mask": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mask"
     }
   },
   "required": [
@@ -1491,6 +1624,14 @@ Args:
     model: Gemini model id. Default ``gemini-3.8-flash``.
     temperature: Optional sampling override; omitted by default.
     system_prompt: Override the default analyze-mode instruction.
+    thinking_level: Gemini reasoning depth. Omitted by default, so the
+        model's own default applies. Thinking tokens are billed as
+        output and are usually most of a call's cost.
+
+Returns:
+    The model, resolved image path, question, free-form answer, an echo
+    of the context, and ``usage``: the token counts Gemini reported
+    (``None`` when it reported none). ``usage`` carries no prices.
 
 Raises:
     RuntimeError: ``IMAGE_NOT_FOUND``, ``API_KEY_MISSING``,
@@ -1613,6 +1754,24 @@ Raises:
       ],
       "default": null,
       "title": "System Prompt"
+    },
+    "thinking_level": {
+      "anyOf": [
+        {
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Thinking Level"
     }
   },
   "required": [
@@ -1652,7 +1811,9 @@ Args:
 
 Returns:
     Resolved ordered paths and labels, reasoning controls, the original
-    question, a free-form answer, and an echo of shared context.
+    question, a free-form answer, an echo of shared context, and
+    ``usage``: the token counts Gemini reported (``None`` when it
+    reported none; no prices applied).
 
 Raises:
     RuntimeError: ``INVALID_INPUT`` for list/label errors,

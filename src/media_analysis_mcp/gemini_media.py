@@ -259,6 +259,38 @@ def call_structured(
     )
 
 
+def usage_summary(response: Any) -> Optional[dict[str, Any]]:
+    """Return the token counts Gemini reported for one response, or None.
+
+    Keeps the google-genai ``usage_metadata`` field names. Thinking tokens are
+    billed at the output rate, so billable output is ``candidates_token_count``
+    plus ``thoughts_token_count``. No prices are applied here.
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        return None
+    summary: dict[str, Any] = {
+        name: getattr(usage, name, None)
+        for name in (
+            "prompt_token_count",
+            "candidates_token_count",
+            "thoughts_token_count",
+            "total_token_count",
+            "cached_content_token_count",
+        )
+    }
+    by_modality: dict[str, int] = {}
+    for detail in getattr(usage, "prompt_tokens_details", None) or []:
+        modality = getattr(detail, "modality", None)
+        name = str(getattr(modality, "name", None) or modality).lower()
+        by_modality[name] = by_modality.get(name, 0) + (
+            getattr(detail, "token_count", None) or 0
+        )
+    if by_modality:
+        summary["prompt_tokens_by_modality"] = by_modality
+    return summary
+
+
 def call_unstructured(
     *,
     client: Any,
@@ -269,6 +301,7 @@ def call_unstructured(
     temperature: Optional[float] = None,
     thinking_level: Optional[str] = None,
     max_output_tokens: Optional[int] = None,
+    usage_out: Optional[dict[str, Any]] = None,
 ) -> str:
     """Make a free-form (no response schema) call to Gemini and return the
     response text. Companion to ``call_structured`` for the analyze_* tools.
@@ -276,6 +309,9 @@ def call_unstructured(
     Used when the caller has an ad-hoc question and doesn't want to commit to
     a fixed response taxonomy. The describe_* / score_* tools bind to a
     Pydantic schema for repeatability; analyze_* opts out for flexibility.
+
+    Pass a dict as ``usage_out`` to receive the response's token counts (see
+    ``usage_summary``). It is left untouched when Gemini reports none.
     """
     config_kwargs: dict[str, Any] = {
         "system_instruction": system_instruction,
@@ -294,6 +330,8 @@ def call_unstructured(
         contents=contents,
         config=config,
     )
+    if usage_out is not None:
+        usage_out.update(usage_summary(response) or {})
     text: Optional[str] = getattr(response, "text", None)
     if text and text.strip():
         return text.strip()

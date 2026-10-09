@@ -304,3 +304,105 @@ def test_analyze_image_errors_on_missing_file(tmp_path: Path) -> None:
 def test_analyze_image_rejects_blank_question(image_path: Path) -> None:
     with pytest.raises(RuntimeError, match="^INVALID_INPUT: question is required"):
         server.analyze_image(image_path=str(image_path), question="   ")
+
+
+def _response_with_usage() -> object:
+    modality = type("Modality", (), {"name": "IMAGE"})()
+    text_modality = type("Modality", (), {"name": "TEXT"})()
+    usage = type("Usage", (), {
+        "prompt_token_count": 2958,
+        "candidates_token_count": 190,
+        "thoughts_token_count": 1964,
+        "total_token_count": 5112,
+        "cached_content_token_count": None,
+        "prompt_tokens_details": [
+            type("Detail", (), {"modality": modality, "token_count": 1100})(),
+            type("Detail", (), {"modality": text_modality, "token_count": 1858})(),
+        ],
+    })()
+    return type("Response", (), {"text": "A caption.", "usage_metadata": usage})()
+
+
+def test_unstructured_call_reports_token_usage_when_asked() -> None:
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            return _response_with_usage()
+
+    client = type("Client", (), {"models": FakeModels()})()
+    usage: dict = {}
+
+    server.gemini_media.call_unstructured(
+        client=client,
+        gtypes=_CaptureConfigTypes,
+        model="test-model",
+        system_instruction="analyze",
+        contents=["target"],
+        usage_out=usage,
+    )
+
+    assert usage == {
+        "prompt_token_count": 2958,
+        "candidates_token_count": 190,
+        "thoughts_token_count": 1964,
+        "total_token_count": 5112,
+        "cached_content_token_count": None,
+        "prompt_tokens_by_modality": {"image": 1100, "text": 1858},
+    }
+
+
+def test_unstructured_call_leaves_usage_empty_when_gemini_reports_none() -> None:
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            return type("Response", (), {"text": "A caption."})()
+
+    client = type("Client", (), {"models": FakeModels()})()
+    usage: dict = {}
+
+    server.gemini_media.call_unstructured(
+        client=client,
+        gtypes=_CaptureConfigTypes,
+        model="test-model",
+        system_instruction="analyze",
+        contents=["target"],
+        usage_out=usage,
+    )
+
+    assert usage == {}
+
+
+def test_analyze_image_returns_usage_and_passes_thinking_level(
+    monkeypatch: pytest.MonkeyPatch, image_path: Path
+) -> None:
+    def fake_call_unstructured(**kwargs):
+        assert kwargs["thinking_level"] == "low"
+        kwargs["usage_out"].update({"prompt_token_count": 12, "thoughts_token_count": 3})
+        return "An answer."
+
+    monkeypatch.setattr(
+        server.gemini_media, "call_unstructured", fake_call_unstructured
+    )
+
+    result = server.analyze_image(
+        image_path=str(image_path),
+        question="what is drawn here?",
+        model="test-model",
+        thinking_level="low",
+    )
+
+    assert result["usage"] == {"prompt_token_count": 12, "thoughts_token_count": 3}
+    assert result["thinking_level"] == "low"
+
+
+def test_analyze_image_usage_is_none_when_nothing_was_reported(
+    monkeypatch: pytest.MonkeyPatch, image_path: Path
+) -> None:
+    monkeypatch.setattr(
+        server.gemini_media, "call_unstructured", lambda **kwargs: "An answer."
+    )
+
+    result = server.analyze_image(
+        image_path=str(image_path), question="what is drawn here?", model="test-model"
+    )
+
+    assert result["usage"] is None
+    assert result["thinking_level"] is None

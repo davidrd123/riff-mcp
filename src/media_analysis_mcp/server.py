@@ -410,6 +410,9 @@ def analyze_image(
     model: str = DEFAULT_ANALYSIS_MODEL,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
+    thinking_level: Optional[
+        Literal["minimal", "low", "medium", "high"]
+    ] = None,
 ) -> dict[str, Any]:
     """Free-form image analysis. Same multimodal plumbing as describe_image,
     but no response schema — Gemini answers ``question`` in prose.
@@ -430,6 +433,14 @@ def analyze_image(
         model: Gemini model id. Default ``gemini-3.8-flash``.
         temperature: Optional sampling override; omitted by default.
         system_prompt: Override the default analyze-mode instruction.
+        thinking_level: Gemini reasoning depth. Omitted by default, so the
+            model's own default applies. Thinking tokens are billed as
+            output and are usually most of a call's cost.
+
+    Returns:
+        The model, resolved image path, question, free-form answer, an echo
+        of the context, and ``usage``: the token counts Gemini reported
+        (``None`` when it reported none). ``usage`` carries no prices.
 
     Raises:
         RuntimeError: ``IMAGE_NOT_FOUND``, ``API_KEY_MISSING``,
@@ -455,6 +466,7 @@ def analyze_image(
         question=question_text,
     )
 
+    usage: dict[str, Any] = {}
     answer = gemini_media.call_unstructured(
         client=client,
         gtypes=gtypes,
@@ -462,6 +474,8 @@ def analyze_image(
         system_instruction=system_instruction,
         contents=contents,
         temperature=temperature,
+        thinking_level=thinking_level,
+        usage_out=usage,
     )
 
     return {
@@ -469,6 +483,8 @@ def analyze_image(
         "image_path": str(Path(image_path).expanduser().resolve()),
         "question": question_text,
         "answer": answer,
+        "thinking_level": thinking_level,
+        "usage": usage or None,
         "context_used": _context_used(
             prompt=prompt,
             intent=intent,
@@ -523,7 +539,9 @@ def analyze_images(
 
     Returns:
         Resolved ordered paths and labels, reasoning controls, the original
-        question, a free-form answer, and an echo of shared context.
+        question, a free-form answer, an echo of shared context, and
+        ``usage``: the token counts Gemini reported (``None`` when it
+        reported none; no prices applied).
 
     Raises:
         RuntimeError: ``INVALID_INPUT`` for list/label errors,
@@ -545,6 +563,7 @@ def analyze_images(
         image_module=image_module,
         question=question_text,
     )
+    usage: dict[str, Any] = {}
     answer = gemini_media.call_unstructured(
         client=client,
         gtypes=gtypes,
@@ -554,6 +573,7 @@ def analyze_images(
         temperature=temperature,
         thinking_level=thinking_level,
         max_output_tokens=max_output_tokens,
+        usage_out=usage,
     )
 
     return {
@@ -564,6 +584,7 @@ def analyze_images(
         "max_output_tokens": max_output_tokens,
         "question": question_text,
         "answer": answer,
+        "usage": usage or None,
         "context_used": {
             "prompt": prompt,
             "intent": intent,
