@@ -6,6 +6,7 @@ import hashlib
 import io
 import os
 import re
+import time
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -26,9 +27,15 @@ BILLING_NOTICE = (
 
 def validate_job(job: dict[str, Any]) -> dict[str, Any]:
     """Validate before credentials, filesystem writes, or paid calls; return API params."""
+    if job.get("mask") is not None:
+        if not isinstance(job["mask"], str) or not job["mask"].strip():
+            raise RuntimeError("INVALID_INPUT: mask must be a non-empty path")
+        if not job.get("image") and not job.get("images"):
+            raise RuntimeError("INVALID_INPUT: mask requires a reference image")
     model = job["model"]
-    if model != "gpt-image-2" and not re.fullmatch(r"gpt-image-2-\d{4}-\d{2}-\d{2}", model):
-        raise RuntimeError("INVALID_INPUT: provider=openai supports gpt-image-2 or a dated snapshot")
+    is_image_25 = model in {"gpt-image-2.5-sunburst", "gpt-image-2.5-flare"}
+    if not is_image_25 and model != "gpt-image-2" and not re.fullmatch(r"gpt-image-2-\d{4}-\d{2}-\d{2}", model):
+        raise RuntimeError("INVALID_INPUT: provider=openai supports gpt-image-2 (or a dated snapshot), gpt-image-2.5-sunburst, or gpt-image-2.5-flare")
     for key in ("aspect_ratio", "image_size", "temperature", "system_prompt"):
         if job.get(key) is not None and job.get(key) != "":
             raise RuntimeError(f"INVALID_INPUT: {key} is not supported by the OpenAI Images API; "
@@ -46,8 +53,11 @@ def validate_job(job: dict[str, Any]) -> dict[str, Any]:
     if type(count) is not int or not 1 <= count <= 4:
         raise RuntimeError("INVALID_INPUT: num_outputs must be an integer between 1 and 4")
     params = {"model": model, "prompt": job["prompt"], "n": count}
+    quality_choices = {"auto", "low", "medium", "high"}
+    if is_image_25:
+        quality_choices.update({"xhigh", "max"})
     for key, default, choices in (
-        ("quality", "auto", {"auto", "low", "medium", "high"}),
+        ("quality", "auto", quality_choices),
         ("output_format", "png", {"png", "jpeg", "webp"}),
         ("background", "auto", {"auto", "opaque", "transparent"}),
     ):
@@ -91,13 +101,7 @@ def init_openai_client() -> Any:
     return OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=300.0, max_retries=0)
 
 
-def generate_openai_image_job(
-    *, batch_path: Path, job: dict[str, Any], run_day_dir: Path, client: Any = None,
-    allow_api_billing: bool = False,
-) -> dict[str, Any]:
-    params = validate_job(job)
-    if allow_api_billing is not True:
-        raise RuntimeError(f"API_BILLING_CONFIRMATION_REQUIRED: {BILLING_NOTICE}")
+def validate_assets(job: dict[str, Any], batch_path: Path) -> tuple[list[Path], Path | None]:
     image_module = require_pillow()
     inputs = resolve_image_inputs(job, base_dir=batch_path.parent.resolve())
     if len(inputs) > 16:
@@ -111,6 +115,37 @@ def generate_openai_image_job(
             if img.format not in {"PNG", "JPEG", "WEBP"}:
                 raise RuntimeError(f"INVALID_INPUT: OpenAI reference must be PNG, JPEG, or WebP: {path}")
             img.verify()
+
+    mask = None
+    if job.get("mask") is not None:
+        mask = Path(job["mask"]).expanduser()
+        if not mask.is_absolute():
+            mask = batch_path.parent / mask
+        mask = mask.resolve()
+        if not mask.is_file():
+            raise RuntimeError(f"MASK_NOT_FOUND: {mask}")
+        if mask.stat().st_size >= 4 * 1024 * 1024:
+            raise RuntimeError("INVALID_INPUT: mask must be smaller than 4 MiB")
+        with image_module.open(inputs[0]) as first, image_module.open(mask) as region:
+            if first.format != "PNG" or region.format != "PNG":
+                raise RuntimeError("INVALID_INPUT: masked edits require PNG source and mask")
+            if region.size != first.size or "A" not in region.getbands():
+                raise RuntimeError("INVALID_INPUT: mask needs alpha and matching source dimensions")
+            if region.getchannel("A").getextrema()[0] != 0:
+                raise RuntimeError("INVALID_INPUT: mask needs fully transparent editable pixels")
+            region.load()
+    return inputs, mask
+
+
+def generate_openai_image_job(
+    *, batch_path: Path, job: dict[str, Any], run_day_dir: Path, client: Any = None,
+    allow_api_billing: bool = False,
+) -> dict[str, Any]:
+    params = validate_job(job)
+    if allow_api_billing is not True:
+        raise RuntimeError(f"API_BILLING_CONFIRMATION_REQUIRED: {BILLING_NOTICE}")
+    image_module = require_pillow()
+    inputs, mask = validate_assets(job, batch_path)
 
     title_slug = slugify(job["title"])
     job_dir = ensure_dir(run_day_dir / slugify(job["model"], max_len=80)
@@ -127,7 +162,11 @@ def generate_openai_image_job(
         "attempts": 0, "interaction_ids": [], "text": None,
         "job_dir": str(job_dir), "outputs": [],
     }
+    if mask is not None:
+        result["mask"] = str(mask)
+        result["mask_sha256"] = hashlib.sha256(mask.read_bytes()).hexdigest()
     write_json(job_dir / "job.json", result)
+    started = time.monotonic()
     owned_client = client is None
     try:
         if owned_client:
@@ -136,7 +175,8 @@ def generate_openai_image_job(
             if inputs:
                 files = [stack.enter_context(path.open("rb")) for path in inputs]
                 result["attempts"] = 1
-                response = client.images.edit(image=files, **params)
+                mask_args = {"mask": stack.enter_context(mask.open("rb"))} if mask else {}
+                response = client.images.edit(image=files, **mask_args, **params)
             else:
                 result["attempts"] = 1
                 response = client.images.generate(**params)
@@ -172,6 +212,7 @@ def generate_openai_image_job(
             raise RuntimeError("OUTPUT_COUNT_MISMATCH: OpenAI returned a different number of images")
         result.update(status="ok", created_at=now_iso())
     except Exception as exc:
+        result["elapsed_seconds"] = round(time.monotonic() - started, 3)
         # Keep structured provider diagnostics, without serializing request headers/body.
         result.update(status="failed", created_at=now_iso(), error={
             "type": type(exc).__name__, "code": getattr(exc, "code", None),
@@ -188,5 +229,6 @@ def generate_openai_image_job(
     finally:
         if owned_client and client is not None:
             client.close()
+    result["elapsed_seconds"] = round(time.monotonic() - started, 3)
     write_json(job_dir / "job.json", result)
     return result

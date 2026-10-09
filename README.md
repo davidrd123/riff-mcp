@@ -29,14 +29,17 @@ The repo now has two generation paths:
 Current defaults:
 
 - CLI video default model: `veo-3.1-fast-generate-preview`
-- CLI/MCP image default model: `gemini-3-pro-image`
-- Opt-in OpenAI image model (`provider="openai"`): `gpt-image-2`
+- CLI/MCP image default model: `gemini-nano-banana-2.1` (Nano Banana 2.1); pass
+  `gemini-3-pro-image` explicitly for Nano Banana Pro
+- Opt-in OpenAI image models (`provider="openai"`): `gpt-image-2` (default),
+  `gpt-image-2.5-sunburst`, `gpt-image-2.5-flare`
 - MCP Seedance video default model: `bytedance/seedance-2.5`
 - Opt-in fal video tool: `start_fal_video_job`, H3 Max at 768p (480p selectable)
 - Media-analysis image default model: `gemini-3.8-flash`
 - Media-analysis video default model: `gemini-3.8-flash`
 
-Gemini model strings are configurable. The OpenAI adapter accepts `gpt-image-2`
+Gemini model strings are configurable. The OpenAI adapter also accepts the two
+GPT Image 2.5 IDs above, alongside `gpt-image-2`
 and dated GPT-Image-2 snapshots; it does not route arbitrary model names.
 
 ## Install
@@ -446,7 +449,7 @@ Current defaults in the standalone CLI:
 
 - mode: `video`
 - video model: `veo-3.1-fast-generate-preview`
-- image model: `gemini-3-pro-image`
+- image model: `gemini-nano-banana-2.1`
 - image provider: `gemini`; explicit `openai` selects `gpt-image-2`
 - image temperature: omitted by default; `--temperature` is an opt-in override
 - image num outputs: `1`
@@ -571,10 +574,11 @@ flags override them. Mode column shows where each key applies.
 | `title` | both | Auto-derived from prompt if omitted |
 | `prompt` | YAML only | Text format uses the block body for the prompt |
 | `prompt_file` | both | Loads the prompt from a separate file (overrides `prompt`/body) |
-| `model` | both | Model code, e.g. `gemini-3-pro-image` or `gemini-3.1-flash-image` |
+| `model` | both | Model code, e.g. `gemini-nano-banana-2.1` or `gemini-3-pro-image` |
 | `provider` | image | `gemini` (default) or explicit `openai` |
 | `size` | OpenAI image | Pixel dimensions, e.g. `1536x1024`, or `auto` |
-| `quality` | OpenAI image | `auto`, `low`, `medium`, `high` |
+| `quality` | OpenAI image | `auto`, `low`, `medium`, `high`; GPT Image 2.5 also accepts `xhigh`, `max` |
+| `mask` | OpenAI image edit | PNG alpha mask for the first reference; same dimensions, under 4 MiB |
 | `output_format` | OpenAI image | `png`, `jpeg`, `webp` |
 | `background` | OpenAI image | `auto`, `opaque`, `transparent` (PNG/WebP) |
 | `output_compression` | OpenAI image | Integer 0–100 for JPEG/WebP only |
@@ -788,3 +792,18 @@ video inspection through Gemini Interactions. Omit `fps`; static remains the
 default. Results preserve the raw processing trace and report whether a linked
 call/result pair was observed. See the [agent quickstart](docs/AGENT_QUICKSTART.md#adaptive-video-inspection)
 for an example, result handling, and restart instructions.
+
+### Regional edits and model comparisons
+
+OpenAI image edits accept `mask` through MCP, CLI `--mask`, and YAML jobs.
+Start with a reference image and direct instructions; omit the mask by default.
+Use masks for user-supplied selections or demonstrated targeting problems.
+Hand-drawn boundaries can introduce errors and are not routine edit preparation.
+Use a PNG base and matching PNG alpha mask; transparent pixels identify the
+region to edit. Riff validates assets and records mask hashes.
+
+The `compare_image_variants` MCP tool previews 2–8 explicit model/quality/size
+variants of one prompt. After bounded billing approval, it generates one image
+per variant and saves a side-by-side HTML review with JSON records, latency,
+usage, and dated list-price estimates. It stops on the first failure and never
+retries automatically. See the [workflow examples](docs/AGENT_QUICKSTART.md#regional-edits-with-a-mask).

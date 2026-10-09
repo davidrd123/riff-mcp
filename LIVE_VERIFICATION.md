@@ -432,3 +432,59 @@ the installed Google SDK with mocked HTTP transport, request serialization,
 raw trace retention, matched/unmatched evidence, reference images, both tools,
 validation, and upload cleanup on success and failure. Existing static tests
 remain in the regression suite.
+
+## GPT Image 2.5 availability check — 2026-09-08
+
+Added explicit Sunburst and Flare model IDs and their xhigh/max quality values,
+following the official image-generation guide. Existing defaults are unchanged.
+Both model retrieval requests using the locally configured OpenAI key returned
+HTTP 404 with code model_not_found. This does not distinguish rollout status
+from account access and does not prove Images endpoint availability.
+A subsequent user-approved single Sunburst generation through Riff succeeded
+with HTTP 200 at 2026-09-08T12:48:18-07:00, despite the model lookup 404.
+Requested model: gpt-image-2.5-sunburst; one low-quality 1024x1024 PNG;
+one attempt, no retries. The saved image was visually inspected and matches
+the blue ceramic cup prompt. Request ID: req_054ce9ffa2cd46cb8eae4832edd02110.
+Usage: 16 text input tokens, 196 image output tokens. Output SHA256:
+52c44120cba3fef3f19286213d22098b42684baf1a9bd6ecffc4cf72eadaf40c.
+The response did not independently echo a model ID; success verifies acceptance
+of the requested ID by the Images endpoint. Flare, edits, and higher qualities
+remain unverified live. The job record and output are under the ignored
+out/2026-09-08/gpt-image-25-sunburst/01_a-blue-ceramic-cup-on-a_8784d33a directory.
+The 227-test offline suite, Ruff, and
+schema check passed, including real-SDK mocked generation/edit requests for
+both models and rejection of new quality values for GPT Image 2.
+
+## Regional edits and comparisons — offline verification
+
+Mask multipart submission, PNG/alpha/dimension validation, provider separation,
+mask hashes, and comparison billing gates are tested offline. Mocked comparison
+runs cover full-batch prevalidation, stop-on-failure, unique output directories,
+HTML escaping and image links, usage-based estimates, and missing usage.
+No live masked edit or comparison batch has been submitted for this change.
+
+### Live direct-edit comparison — 2026-09-08
+
+The user approved a three-output HIA jacket recolor comparison without a mask.
+The comparison tool completed all three Images API edits at 1264x848, one attempt
+each: Flare medium (14.764s), Sunburst medium (22.922s), Sunburst high (25.678s).
+Returned usage produced uncached list-price estimates of USD 0.01816, 0.01816,
+and 0.04471 respectively (USD 0.08103 total; not an invoice). All outputs and
+comparison JSON/HTML were saved under the ignored out directory, comparison ID
+708a470663804189811eddedd9bc4195. This verifies the end-to-end comparison and
+both model IDs for direct edits. It does not verify masked edits or establish
+a general model ranking. Masked edits remain offline-tested only.
+
+### Default image model: Nano Banana 2.1 — 2026-10-07
+
+The Gemini image default for the CLI and `generate_image` moved from
+`gemini-3-pro-image` to `gemini-nano-banana-2.1`. Live evidence, on google-genai
+2.20.0: the Models API returned `models/gemini-nano-banana-2.1` ("Nano Banana 2.1")
+with generateContent, countTokens, and batchGenerateContent. One `generate_image`
+call with the model passed explicitly, one reference image, `aspect_ratio="3:4"`,
+and `image_size="2K"` returned a 1792x2400 PNG in one attempt (about 22 s), saved
+under the ignored out/2026-10-07/gemini-nano-banana-21/01_repair-cafe-volunteer-v3-nb21_8eade71b
+directory. That call ran on the pre-restart server, so the new default itself is
+verified offline only (238-test suite, Ruff, schema check). The Interactions API,
+`thinking_level`, 4K output, and multi-reference input remain unverified live on
+this model. `gemini-3-pro-image` stays available as an explicit override.

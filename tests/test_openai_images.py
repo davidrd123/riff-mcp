@@ -185,7 +185,9 @@ def test_cli_yaml_overrides_and_plan_no_writes(tmp_path, capsys):
 
 def test_legacy_gemini_hashes_and_mcp_defaults_are_unchanged(monkeypatch):
     monkeypatch.delenv("GEMINI_IMAGE_MODEL", raising=False)
-    legacy = cli.build_resolved_image_job(prompt="compatibility reference")
+    legacy = cli.build_resolved_image_job(
+        prompt="compatibility reference", model="gemini-3-pro-image",
+    )
     assert "provider" not in legacy
     assert cli.build_job_hash(legacy) == "7ba1f6b4"  # captured from pre-change HEAD
     stateful = cli.build_resolved_image_job(
@@ -193,9 +195,10 @@ def test_legacy_gemini_hashes_and_mcp_defaults_are_unchanged(monkeypatch):
         config={"api": "interactions", "store": True, "previous_interaction_id": "parent"},
     )
     assert cli.build_job_hash(stateful) == "23a4605c"
+    assert cli.build_resolved_image_job(prompt="cup")["model"] == "gemini-nano-banana-2.1"
     monkeypatch.setenv("GEMINI_IMAGE_MODEL", "custom-cli-model")
     result = server.generate_image(prompt="cup", dry_run=True)
-    assert result["model"] == "gemini-3-pro-image"  # MCP historically ignores CLI env override
+    assert result["model"] == "gemini-nano-banana-2.1"  # MCP historically ignores CLI env override
     assert result["config"]["api"] == "generate_content"
     assert "provider" not in result
     with pytest.raises(RuntimeError, match="require provider=openai"):
@@ -239,7 +242,9 @@ def test_doctor_openai_needs_no_gemini_or_replicate(monkeypatch):
 
 
 @pytest.mark.parametrize("editing", [False, True])
-def test_real_sdk_serializes_generation_and_edit_requests(tmp_path, editing):
+@pytest.mark.parametrize("model,quality", [("gpt-image-2", "high"),
+    ("gpt-image-2.5-sunburst", "xhigh"), ("gpt-image-2.5-flare", "max")])
+def test_real_sdk_serializes_generation_and_edit_requests(tmp_path, editing, model, quality):
     openai = pytest.importorskip("openai")
     import httpx
 
@@ -252,9 +257,12 @@ def test_real_sdk_serializes_generation_and_edit_requests(tmp_path, editing):
             assert request.url.path == "/v1/images/edits"
             assert b'name="image[]"' in request.content
             assert raw in request.content
+            assert model.encode() in request.content
+            assert quality.encode() in request.content
         else:
             assert request.url.path == "/v1/images/generations"
-            assert json.loads(request.content)["model"] == "gpt-image-2"
+            assert json.loads(request.content)["model"] == model
+            assert json.loads(request.content)["quality"] == quality
         return httpx.Response(200, headers={"x-request-id": "req-sdk"}, json={
             "created": 1, "data": [{"b64_json": base64.b64encode(raw).decode()}],
             "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
@@ -263,7 +271,8 @@ def test_real_sdk_serializes_generation_and_edit_requests(tmp_path, editing):
     (tmp_path / "ref.png").write_bytes(raw)
     with openai.OpenAI(api_key="test-only", max_retries=0,
                        http_client=httpx.Client(transport=httpx.MockTransport(handler))) as client:
-        result = run(tmp_path, client, **({"image": "ref.png"} if editing else {}))
+        result = run(tmp_path, client, model=model, quality=quality,
+                     **({"image": "ref.png"} if editing else {}))
     assert result["request_id"] == "req-sdk" and len(seen) == 1
 
 
@@ -296,3 +305,33 @@ def test_real_sdk_quota_error_no_retry_and_safe_failure_record(tmp_path, monkeyp
     assert record["error"]["request_id"] == "req-quota"
     assert "test-secret-never-log" not in record_text
     assert "private body" not in record_text
+
+
+@pytest.mark.parametrize('model', ['gpt-image-2', 'gpt-image-2-2026-04-21'])
+@pytest.mark.parametrize('quality', ['xhigh', 'max'])
+def test_legacy_model_rejects_new_quality(tmp_path, model, quality):
+    with pytest.raises(RuntimeError, match='quality must be'):
+        openai_images.validate_job(job(tmp_path, model=model, quality=quality))
+
+
+def test_image_25_requires_exact_documented_id(tmp_path):
+    with pytest.raises(RuntimeError, match='supports'):
+        openai_images.validate_job(job(tmp_path, model='gpt-image-2.5'))
+
+
+def test_real_sdk_mask_multipart_and_record(tmp_path):
+    openai = pytest.importorskip('openai')
+    import httpx
+    raw = image_bytes()
+    (tmp_path / 'ref.png').write_bytes(raw)
+    (tmp_path / 'mask.png').write_bytes(raw)
+    def handler(request):
+        assert request.url.path == '/v1/images/edits'
+        assert b'name="mask"' in request.content
+        assert b'name="image[]"' in request.content
+        return httpx.Response(200, json={'data': [{'b64_json': base64.b64encode(raw).decode()}]})
+    with openai.OpenAI(api_key='fake', max_retries=0,
+                      http_client=httpx.Client(transport=httpx.MockTransport(handler))) as client:
+        result = run(tmp_path, client, image='ref.png', mask='mask.png')
+    assert result['mask_sha256'] and result['elapsed_seconds'] >= 0
+    assert json.loads((Path(result['job_dir']) / 'job.json').read_text())['mask_sha256'] == result['mask_sha256']

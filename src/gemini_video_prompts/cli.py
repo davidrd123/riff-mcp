@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
 
 
 DEFAULT_VIDEO_MODEL = "veo-3.1-fast-generate-preview"
-DEFAULT_IMAGE_MODEL = "gemini-3-pro-image"
+DEFAULT_IMAGE_MODEL = "gemini-nano-banana-2.1"
 BLOCK_SEPARATOR = re.compile(r"(?m)^\s*---+\s*$")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -329,6 +329,7 @@ def build_resolved_image_job(
     output_format: Optional[str] = None,
     background: Optional[str] = None,
     output_compression: Optional[int] = None,
+    mask: Optional[str] = None,
 ) -> dict[str, Any]:
     """Build a resolved image-mode job dict from inline parameters.
 
@@ -343,11 +344,11 @@ def build_resolved_image_job(
         raise RuntimeError("INVALID_INPUT: provider must be gemini or openai")
     openai_options = {
         "size": size, "quality": quality, "output_format": output_format,
-        "background": background, "output_compression": output_compression,
+        "background": background, "output_compression": output_compression, "mask": mask,
     }
     if provider == "gemini" and any(value is not None for value in openai_options.values()):
         raise RuntimeError("INVALID_INPUT: size, quality, output_format, background, and "
-                           "output_compression require provider=openai")
+                           "output_compression and mask require provider=openai")
 
     resolved_title = title if title else prompt_stem(prompt)
     resolved_model = (
@@ -447,12 +448,13 @@ def resolved_job(
             output_format=merged.get("output_format"),
             background=merged.get("background"),
             output_compression=merged.get("output_compression"),
+            mask=merged.get("mask"),
         )
 
     # Video mode
     if merged.get("provider") not in {None, "gemini"} or any(
         merged.get(key) is not None
-        for key in ("size", "quality", "output_format", "background", "output_compression")
+        for key in ("size", "quality", "output_format", "background", "output_compression", "mask")
     ):
         raise RuntimeError("INVALID_INPUT: OpenAI options require mode=image")
     title = str(merged.get("title") or prompt_stem(prompt))
@@ -512,6 +514,8 @@ def build_job_hash(job: dict[str, Any]) -> str:
         payload.update({key: job.get(key) for key in (
             "provider", "size", "quality", "output_format", "background", "output_compression",
         )})
+        if job.get("mask") is not None:
+            payload["mask"] = job["mask"]
         raw = json.dumps(payload, sort_keys=True).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:8]
 
@@ -544,6 +548,7 @@ def summarize_job(index: int, job: dict[str, Any]) -> dict[str, Any]:
         "prompt_preview": job["prompt"][:120],
         "out_root": str(job["out_root"]),
         **billing,
+        **({"mask": job["mask"]} if job.get("mask") is not None else {}),
         **({key: job.get(key) for key in (
             "provider", "size", "quality", "output_format", "background", "output_compression",
         )} if job.get("provider") == "openai" else {}),
@@ -992,9 +997,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--image-size", help="Override image_size for image generation.")
     parser.add_argument("--provider", choices=("gemini", "openai"), help="Image provider; default gemini.")
     parser.add_argument("--size", help="OpenAI pixel dimensions, e.g. 1536x1024, or auto.")
-    parser.add_argument("--quality", choices=("auto", "low", "medium", "high"))
+    parser.add_argument("--quality", choices=("auto", "low", "medium", "high", "xhigh", "max"))
     parser.add_argument("--output-format", choices=("png", "jpeg", "webp"))
     parser.add_argument("--background", choices=("auto", "opaque", "transparent"))
+    parser.add_argument("--mask", help="OpenAI edit mask PNG; transparent regions are editable.")
     parser.add_argument("--output-compression", type=int, help="OpenAI JPEG/WebP compression, 0..100.")
     parser.add_argument(
         "--allow-api-billing", action="store_true",
@@ -1062,6 +1068,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "output_format": args.output_format,
         "background": args.background,
         "output_compression": args.output_compression,
+        "mask": args.mask,
     }
     jobs = [
         resolved_job(

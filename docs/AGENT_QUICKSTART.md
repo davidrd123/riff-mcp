@@ -150,6 +150,18 @@ Expected: `status="ok"`, `outputs[]`, `job_dir`, `request_id`, and available
 and read `<job_dir>/job.json` for the record. A successful API response is not
 the user's creative approval.
 
+## Select GPT Image 2.5
+
+In the OpenAI preview above, set `model` to `gpt-image-2.5-sunburst` or
+`gpt-image-2.5-flare`. Both add `xhigh` and `max` quality; these values are
+rejected for GPT Image 2. Existing defaults and billing gates are unchanged.
+The unsuffixed `gpt-image-2.5` is not a documented model ID.
+
+Use `dry_run=true` first. Model lookup checks visibility; only a successful
+image request proves generation access. Do not silently fall back to another
+model after an error. Restart the MCP server after updating.
+See the [official image guide](https://developers.openai.com/api/docs/guides/image-generation).
+
 ## Edit the returned image
 
 Use the exact path from `outputs[0].path`, not a guessed filename. Call
@@ -166,7 +178,60 @@ generation; adding references selects editing automatically.
 OpenAI Images API calls are stateless here. Do not pass Gemini
 `previous_interaction_id`, `store`, `thinking_level`, `temperature`,
 `system_prompt`, `aspect_ratio`, or `image_size`. Use `size` for dimensions and
-put instructions in `prompt`. There is no mask parameter in this adapter yet.
+put instructions in `prompt`. Start with direct edit instructions and omit
+`mask`, including for local changes such as recoloring a jacket. A mask is not
+required to identify an object or preserve the surrounding image.
+
+### Regional edits with a mask
+
+Masks are optional. Use one for a user-supplied selection or after a direct edit
+shows a targeting problem. Do not routinely hand-trace objects before editing:
+imperfect boundaries can introduce missed edges and constrain the desired change.
+
+Pass `image` for the base PNG and `mask` for a PNG of identical dimensions,
+with an alpha channel. Fully transparent pixels mark the editable region.
+Riff currently requires masks smaller than 4 MiB and PNG base images; it does
+not convert assets automatically. With multiple references, the mask applies
+to the first resolved image. Mask guidance does not guarantee unchanged pixels
+elsewhere; inspect the result. Paths and content hashes are saved with the job.
+
+Use `generate_image` with `provider="openai"`, `image`, `mask`, and the edit
+prompt, or supply `--mask /absolute/path/mask.png` in CLI image mode. YAML jobs
+accept `mask`; relative paths resolve against the batch file. Preview first,
+then obtain approval for the specified image count, model, quality, and size.
+
+### Compare models or quality settings
+
+Call `compare_image_variants` with a shared prompt and 2–8 variants. Each makes
+one image; every variant must specify model, quality, and size (no auto values).
+For example:
+
+```json
+{
+  "prompt": "A blue ceramic cup on a cream background",
+  "variants": [
+    {"label": "Flare medium", "model": "gpt-image-2.5-flare", "quality": "medium", "size": "1024x1024"},
+    {"label": "Sunburst medium", "model": "gpt-image-2.5-sunburst", "quality": "medium", "size": "1024x1024"}
+  ],
+  "dry_run": true
+}
+```
+
+Show the preview and billing notice. After approval for the entire batch, pass
+`dry_run=false` and `allow_api_billing=true`. Optional `image`, `images`, and
+`mask` apply to all variants. Start model/quality comparisons without a mask;
+test whether masking helps separately, keeping the model and quality fixed.
+Execution stops at the first failure without retry.
+All assets are checked before the first submission. Save and inspect the result:
+`review_path` is the side-by-side HTML, `record_path` contains complete JSON,
+and each successful entry retains the original job record and outputs.
+
+Cost estimates use returned token usage and dated uncached list prices, excluding
+discounts and taxes. Missing usage means unknown cost, not zero. Latency includes
+the API call and local output handling. There is no seed matching or automatic
+winner: one sample is for visual comparison, not a reliable model benchmark.
+Keep the entire comparison directory when sharing the HTML so images resolve.
+This workflow is an MCP tool; the existing YAML CLI can still run ordinary batches.
 
 For repeatable settings, select quality explicitly; `auto` lets the provider
 choose. PNG is the default output format; JPEG/WebP and compression are
