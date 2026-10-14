@@ -86,6 +86,34 @@ What we learned by running the tools end-to-end during the v1 build. Everything 
 
 Updated 2026-09-02. v1 closed out (Step 8); v2 #1 (live Seedance fire) added the same day; v2 #5 (local async API) implemented + mock-verified + live-smoked; v2 #2 (`.mcp.example.json` + `riff-mcp-doctor`) wired the surface for agent use; project `.mcp.json` wired in this repo and exercised end-to-end against vault-grounded inputs from the sibling GML 2026 Closing Film vault — surfaced the **input-sensitivity finding** that `intent` text is the load-bearing variable for `score_image` (same image / same prompt, ~65pt swing on `creative_brief_fidelity` based purely on intent composition). Also live-fired the full mutation→describe→score riff loop end-to-end through MCP for the first time. On 2026-08-13, the media-analysis default moved to `gemini-3.7-flash` after registry and multimodal live verification; on 2026-09-02 it moved to `gemini-3.8-flash` the same way. **What is NOT yet validated**: whether the scores Gemini returns track production judgment. That requires a human-in-the-loop calibration pass (see v2 outstanding #13). See "Vault-grounded input-sensitivity characterization" section.
 
+## Gemini 4 Argon, opt-in model — 2026-10-13
+
+Not a default change: `gemini-3.8-flash` stays the default and Argon is passed as
+`model="gemini-4-argon"`. Asked for by David on 2026-10-13 ("I think it might make
+sense to have it in our toolkit").
+
+- The live Gemini Models API returned `models/gemini-4-argon`, display name
+  "Gemini 4 Argon", `version: 3.0`, with `generateContent`, `countTokens` and
+  `batchGenerateContent` (no `createCachedContent`), `inputTokenLimit` 1,048,576,
+  `outputTokenLimit` 32,768, and `thinking: true`.
+- Through the running media-analysis MCP server (this checkout's
+  `codex/gpt-image-2-5` code, before this branch's documentation change):
+  - `analyze_image` at `thinking_level=low` on a synthetic 256×128 PNG (a white
+    bar centred on red) named the colours and the centred bar correctly and
+    over-read the size as 320×160. Usage reported 1,238 prompt tokens
+    (1,081 image) and 106 output tokens; no thinking count was reported.
+  - `analyze_audio` on a two-second 440 Hz WAV returned "440 Hz", about two
+    seconds, steady; upload, analysis and deletion completed.
+  - `analyze_video` at `fps=12`, `thinking_level=high` on a two-second
+    `testsrc` MP4 with a 660 Hz tone described the pattern, the counter stepping
+    from 0 to 1 at one second, the scrolling gradient, the steady tone, and a
+    length of 2.0 seconds.
+- Not checked: `processing="agentic"`, `describe_*`/`score_*` schemas, the
+  multi-image and multi-video tools, and quality against Flash on real work.
+- Price (AI Studio pricing page, read 2026-10-13): $2 / $10 per 1M input /
+  output tokens through 2026-11-30, then $4 / $20; Flash is $0.75 / $3.75
+  through 2026-12-31. Paid tier only.
+
 ## Gemini 3.8 Flash default upgrade — 2026-09-02
 
 - The live Gemini Models API returned `models/gemini-3.8-flash` with

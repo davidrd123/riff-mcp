@@ -37,6 +37,8 @@ Current defaults:
 - Opt-in fal video tool: `start_fal_video_job`, H3 Max at 768p (480p selectable)
 - Media-analysis image default model: `gemini-3.8-flash`
 - Media-analysis video default model: `gemini-3.8-flash`
+- Opt-in media-analysis model: `gemini-4-argon` (Gemini 4 Argon), passed as
+  `model` to any analysis tool; paid tier only, about 2.7× Flash's price
 
 Gemini model strings are configurable. The OpenAI adapter also accepts the two
 GPT Image 2.5 IDs above, alongside `gpt-image-2`
@@ -326,6 +328,17 @@ Analysis tools:
 All Gemini image-, video-, and audio-analysis tools default to
 `gemini-3.8-flash`. All retain an opt-in `temperature`
 (omitted unless you pass one — each model uses its own tuned default).
+
+`gemini-4-argon` (Gemini 4 Argon) is available to every analysis tool as an
+explicit `model`; the default stays Flash. It is billed on the paid tier only:
+introductory list prices are $2 per 1M input tokens and $10 per 1M output
+tokens (thinking included) through 2026-11-30, then $4 and $20, against Flash's
+$0.75 and $3.75 through 2026-12-31 (AI Studio pricing page, read 2026-10-13).
+The Models API lists `generateContent`, `countTokens` and
+`batchGenerateContent` for it (no explicit context caching), a 1,048,576-token
+input limit and a 32,768-token output limit. Agentic video processing has not
+been checked with it. Use it where Flash's answer is known to fall short and the
+better answer is worth the price; see LIVE_VERIFICATION.md for what was checked.
 
 #### When to use which: `analyze_*` vs `describe_*`
 
@@ -720,6 +733,11 @@ This project follows [semantic versioning](https://semver.org/). The current
 version is set in [`pyproject.toml`](pyproject.toml).
 
 ### Unreleased
+
+- **Gemini 4 Argon, opt-in for media analysis** — `gemini-4-argon` passes
+  through the existing `model` argument of every analysis tool; no code change
+  was needed. The live Models API and synthetic image, audio, and video calls
+  through the real tools were checked on 2026-10-13. Flash stays the default.
 
 - **fal H3 Max video** — explicit image/reference-to-video queue submission,
   480p/768p, billing confirmation, ordered references, durable recovery, and
