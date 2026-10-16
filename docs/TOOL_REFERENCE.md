@@ -1274,7 +1274,7 @@ before the index existed are immediately discoverable.
 
 ## media-analysis-mcp
 
-12 tools.
+15 tools.
 
 - [describe_image](#describe_image)
 - [score_image](#score_image)
@@ -1288,6 +1288,9 @@ before the index existed are immediately discoverable.
 - [compare_images](#compare_images)
 - [extract_visual_tokens](#extract_visual_tokens)
 - [extract_video_frames](#extract_video_frames)
+- [start_batch_analysis](#start_batch_analysis)
+- [get_batch_analysis](#get_batch_analysis)
+- [cancel_batch_analysis](#cancel_batch_analysis)
 
 ### describe_image
 
@@ -3188,6 +3191,242 @@ Raises:
     "timestamps"
   ],
   "title": "extract_video_framesArguments",
+  "type": "object"
+}
+```
+
+### start_batch_analysis
+
+Start one Gemini request per file over a folder (or a list of files) and return at once.
+
+For dataset captioning and any per-file question: the system prompt file is sent whole with every file, plus
+``user_prompt``. Files are video, image or audio (by extension). ``tier``:
+
+- ``batch`` (default): the Gemini Batch API, half price, asynchronous (Google's target 24 h, expiry 48 h; our runs
+  took minutes). The first ``probe`` files run on the standard tier first so a refused setting fails fast and
+  their tokens price the rest; then jobs of up to ``chunk_size`` files, uploaded just before submission.
+- ``standard``: ordinary calls, ``concurrency`` at a time.
+- ``flex``: ordinary calls at half price that may be refused (503/429) under load; retried with backoff, and
+  finished on standard only if ``flex_fallback`` (full price).
+
+Results land in ``out_dir``: ``items/<key>.json`` (text, finish reason, tokens, attempts), ``texts/<key>.txt``,
+``run.json`` (status, counts, cost). Rerunning on the same folder skips files already done under the same file
+hash and settings. ``prompt_version`` names the prompt text; reusing a name with different text is refused.
+``dry_run`` plans and estimates the cost without any call. Otherwise the run is started as its own process (it
+outlives this server); follow it with ``get_batch_analysis`` and stop it with ``cancel_batch_analysis``.
+
+```json
+{
+  "properties": {
+    "system_prompt_path": {
+      "title": "System Prompt Path",
+      "type": "string"
+    },
+    "user_prompt": {
+      "title": "User Prompt",
+      "type": "string"
+    },
+    "out_dir": {
+      "title": "Out Dir",
+      "type": "string"
+    },
+    "input_dir": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Dir"
+    },
+    "pattern": {
+      "default": "*",
+      "title": "Pattern",
+      "type": "string"
+    },
+    "inputs": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inputs"
+    },
+    "tier": {
+      "default": "batch",
+      "enum": [
+        "batch",
+        "standard",
+        "flex"
+      ],
+      "title": "Tier",
+      "type": "string"
+    },
+    "model": {
+      "default": "gemini-3.8-flash",
+      "title": "Model",
+      "type": "string"
+    },
+    "fps": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fps"
+    },
+    "thinking_level": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": "low",
+      "title": "Thinking Level"
+    },
+    "temperature": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Temperature"
+    },
+    "max_output_tokens": {
+      "default": 65536,
+      "title": "Max Output Tokens",
+      "type": "integer"
+    },
+    "media_resolution": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Media Resolution"
+    },
+    "prompt_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prompt Version"
+    },
+    "concurrency": {
+      "default": 8,
+      "title": "Concurrency",
+      "type": "integer"
+    },
+    "chunk_size": {
+      "default": 200,
+      "title": "Chunk Size",
+      "type": "integer"
+    },
+    "probe": {
+      "default": 1,
+      "title": "Probe",
+      "type": "integer"
+    },
+    "flex_fallback": {
+      "default": false,
+      "title": "Flex Fallback",
+      "type": "boolean"
+    },
+    "dry_run": {
+      "default": false,
+      "title": "Dry Run",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "system_prompt_path",
+    "user_prompt",
+    "out_dir"
+  ],
+  "title": "start_batch_analysisArguments",
+  "type": "object"
+}
+```
+
+### get_batch_analysis
+
+A batch run's status: whether its runner is alive, the plan, each batch job's state, counts of files done
+and failed, tokens and cost so far. ``include_items`` adds up to ``limit`` per-file rows (key, ok, tier, finish
+reason, error, the first 300 characters of the reply).
+
+```json
+{
+  "properties": {
+    "out_dir": {
+      "title": "Out Dir",
+      "type": "string"
+    },
+    "include_items": {
+      "default": false,
+      "title": "Include Items",
+      "type": "boolean"
+    },
+    "limit": {
+      "default": 50,
+      "title": "Limit",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "out_dir"
+  ],
+  "title": "get_batch_analysisArguments",
+  "type": "object"
+}
+```
+
+### cancel_batch_analysis
+
+Ask a batch run to stop: its runner finishes the request in hand, cancels a running batch job and records
+what was done. Files already done stay done; rerun ``start_batch_analysis`` on the folder to continue.
+
+```json
+{
+  "properties": {
+    "out_dir": {
+      "title": "Out Dir",
+      "type": "string"
+    }
+  },
+  "required": [
+    "out_dir"
+  ],
+  "title": "cancel_batch_analysisArguments",
   "type": "object"
 }
 ```

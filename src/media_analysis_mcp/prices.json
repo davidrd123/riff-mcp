@@ -1,0 +1,21 @@
+{
+ "source": "https://ai.google.dev/gemini-api/docs/pricing",
+ "checked": "2026-10-09",
+ "unit": "USD per 1M tokens, paid tier. Output covers thinking tokens. Flex is billed at the batch rate (half of standard).",
+ "models": {
+  "gemini-3.8-flash": {
+   "input": 0.75,
+   "output": 3.75,
+   "batch_input": 0.375,
+   "batch_output": 1.875,
+   "note": "Through 2026-12-31. From 2027-01-01 the page lists double: 1.50 in, 7.50 out (batch 0.75, 3.75)."
+  },
+  "gemini-3.1-pro-preview": {
+   "input": 2.0,
+   "output": 12.0,
+   "batch_input": 1.0,
+   "batch_output": 6.0,
+   "note": "For prompts up to 200k tokens. Above that: 4.00 in, 18.00 out."
+  }
+ }
+}

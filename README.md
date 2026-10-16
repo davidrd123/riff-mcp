@@ -456,6 +456,39 @@ checks only the OpenAI key and required imports, so unrelated service keys or
 video binaries are not required. Its optional network check retrieves the
 `gpt-image-2` model; it does not generate an image or establish billing access.
 
+## Batch analysis (riff-batch)
+
+One Gemini request per file over a folder or a list of files: dataset captioning (a versioned system-prompt file
+sent whole, one user line, a folder of clips, stills or audio) or any per-file question. Three tiers:
+
+| tier | price | how | when |
+|---|---|---|---|
+| `batch` (default) | half of standard | the Gemini Batch API: jobs of up to `--chunk-size` files, uploaded just before submission | most runs; Google targets 24 h (48 h expiry), our runs took minutes |
+| `standard` | full | ordinary calls, `--concurrency` at a time | when you need it now |
+| `flex` | half | ordinary calls with `service_tier: flex`; refused (503/429) under load, retried with backoff | optional; `--flex-fallback` finishes refusals on standard |
+
+The batch tier first runs `--probe` files (default 1) on standard, so a refused setting fails in seconds and the
+measured tokens price the rest. A job is created once and never re-created after an error (a lost reply may still
+have made a billed job); `riff-batch find-jobs` settles it.
+
+```bash
+uv run riff-batch run --sys caption-prompt-v2.md --user "Caption this window." \
+    --input-dir clips/ --pattern "*.mp4" --fps 8 --thinking-level low --temperature 0.7 \
+    --prompt-version v2 --out runs/captions-v2 --dry-run      # plan and estimate; no call
+uv run riff-batch run ... --out runs/captions-v2               # run (or --detach for a background process)
+uv run riff-batch status runs/captions-v2 --items
+uv run riff-batch resume runs/captions-v2                      # after an interruption: collect, then the rest
+uv run riff-batch cancel runs/captions-v2
+```
+
+The run folder holds `request.json`, `run.json` (status, counts, tokens, cost from
+`src/media_analysis_mcp/prices.json`), `events.ndjson`, `items/<key>.json` (text, finish reason, tokens, attempts,
+tier), `texts/<key>.txt`, and `batches/<n>/` (`requests.jsonl`, `job.json`, the raw `results.jsonl`). A rerun skips
+files already done under the same file sha256 and settings and re-runs changed ones (their old records go to
+`superseded/`); a `--prompt-version` name reused with different text is refused. The MCP tools
+`start_batch_analysis`, `get_batch_analysis` and `cancel_batch_analysis` do the same from a client; start launches
+`riff-batch resume` as its own process, so a run outlives the server.
+
 ## Defaults
 
 Current defaults in the standalone CLI:
@@ -733,6 +766,11 @@ This project follows [semantic versioning](https://semver.org/). The current
 version is set in [`pyproject.toml`](pyproject.toml).
 
 ### Unreleased
+
+- **Batch analysis** — `riff-batch` and `start_batch_analysis` / `get_batch_analysis` /
+  `cancel_batch_analysis`: one request per file over a folder on the batch (default, half price), standard or
+  flex tier, with resume by file hash and settings, frozen prompt versions, a standard-tier probe before any batch
+  job, per-file tokens and a cost record.
 
 - **Gemini 4 Argon, opt-in for media analysis** — `gemini-4-argon` passes
   through the existing `model` argument of every analysis tool; no code change

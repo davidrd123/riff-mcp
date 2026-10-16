@@ -1661,6 +1661,86 @@ def extract_video_frames(
     }
 
 
+@mcp.tool()
+def start_batch_analysis(
+    system_prompt_path: str,
+    user_prompt: str,
+    out_dir: str,
+    input_dir: Optional[str] = None,
+    pattern: str = "*",
+    inputs: Optional[list[str]] = None,
+    tier: Literal["batch", "standard", "flex"] = "batch",
+    model: str = DEFAULT_ANALYSIS_MODEL,
+    fps: Optional[float] = None,
+    thinking_level: Optional[str] = "low",
+    temperature: Optional[float] = None,
+    max_output_tokens: int = 65_536,
+    media_resolution: Optional[str] = None,
+    prompt_version: Optional[str] = None,
+    concurrency: int = 8,
+    chunk_size: int = 200,
+    probe: int = 1,
+    flex_fallback: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Start one Gemini request per file over a folder (or a list of files) and return at once.
+
+    For dataset captioning and any per-file question: the system prompt file is sent whole with every file, plus
+    ``user_prompt``. Files are video, image or audio (by extension). ``tier``:
+
+    - ``batch`` (default): the Gemini Batch API, half price, asynchronous (Google's target 24 h, expiry 48 h; our runs
+      took minutes). The first ``probe`` files run on the standard tier first so a refused setting fails fast and
+      their tokens price the rest; then jobs of up to ``chunk_size`` files, uploaded just before submission.
+    - ``standard``: ordinary calls, ``concurrency`` at a time.
+    - ``flex``: ordinary calls at half price that may be refused (503/429) under load; retried with backoff, and
+      finished on standard only if ``flex_fallback`` (full price).
+
+    Results land in ``out_dir``: ``items/<key>.json`` (text, finish reason, tokens, attempts), ``texts/<key>.txt``,
+    ``run.json`` (status, counts, cost). Rerunning on the same folder skips files already done under the same file
+    hash and settings. ``prompt_version`` names the prompt text; reusing a name with different text is refused.
+    ``dry_run`` plans and estimates the cost without any call. Otherwise the run is started as its own process (it
+    outlives this server); follow it with ``get_batch_analysis`` and stop it with ``cancel_batch_analysis``.
+    """
+    from . import batch
+
+    spec = batch.make_spec(
+        out_dir=out_dir, system_prompt_path=system_prompt_path, user_prompt=user_prompt, input_dir=input_dir,
+        pattern=pattern, inputs=inputs, tier=tier, model=model, fps=fps, thinking_level=thinking_level,
+        temperature=temperature, max_output_tokens=max_output_tokens, media_resolution=media_resolution,
+        prompt_version=prompt_version, concurrency=concurrency, chunk_size=chunk_size, probe=probe,
+        flex_fallback=flex_fallback,
+    )
+    plan = batch.run(spec, dry_run=True)
+    if dry_run:
+        return plan
+    busy = batch.status(out_dir) if (Path(spec.out_dir) / "run.json").exists() else {}
+    if busy.get("runner_alive"):
+        raise RuntimeError(f"RUN_BUSY: a runner (pid {busy.get('pid')}) is already working in {spec.out_dir}")
+    batch.Run(spec.out_dir).save_request(spec)
+    pid = batch.launch_detached(spec.out_dir)
+    return {**plan, "dry_run": False, "pid": pid,
+            "next": "get_batch_analysis(out_dir) for progress; cancel_batch_analysis(out_dir) to stop"}
+
+
+@mcp.tool()
+def get_batch_analysis(out_dir: str, include_items: bool = False, limit: int = 50) -> dict[str, Any]:
+    """A batch run's status: whether its runner is alive, the plan, each batch job's state, counts of files done
+    and failed, tokens and cost so far. ``include_items`` adds up to ``limit`` per-file rows (key, ok, tier, finish
+    reason, error, the first 300 characters of the reply)."""
+    from . import batch
+
+    return batch.status(out_dir, items=include_items, limit=limit)
+
+
+@mcp.tool()
+def cancel_batch_analysis(out_dir: str) -> dict[str, Any]:
+    """Ask a batch run to stop: its runner finishes the request in hand, cancels a running batch job and records
+    what was done. Files already done stay done; rerun ``start_batch_analysis`` on the folder to continue."""
+    from . import batch
+
+    return batch.request_cancel(out_dir)
+
+
 def main() -> None:
     """Console-script entry point — runs the FastMCP server on stdio."""
     mcp.run()
